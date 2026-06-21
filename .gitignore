@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+publish/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# NuGet
+*.nupkg
+packages/
+
+# User secrets / config with real keys
+ManusReader/azure-config.json
+
+# Local Claude Code settings (machine-specific paths)
+.claude/settings.local.json
+
+# OS
+Thumbs.db
+.DS_Store

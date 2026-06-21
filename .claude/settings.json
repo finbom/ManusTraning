@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($env:PATH = \"$env:LOCALAPPDATA\\\\dotnet-sdk;$env:PATH\"; Set-Location \"C:\\\\Users\\\\Finbom\\\\VSCode\\\\ManusTraning\\\\ManusReader\"; & \"$env:LOCALAPPDATA\\\\dotnet-sdk\\\\dotnet.exe\" restore 2>&1 | Select-Object -Last 15)",
+      "Bash(dotnet build *)",
+      "PowerShell(Get-Command dotnet -ErrorAction SilentlyContinue; [System.Environment]::GetEnvironmentVariable\\(\"Path\", \"Machine\"\\) | Select-String -Pattern \"dotnet\" -SimpleMatch)",
+      "PowerShell(& \"C:\\\\Program Files\\\\dotnet\\\\dotnet.exe\" build \"c:\\\\Users\\\\Finbom\\\\VSCode\\\\ManusTraning\\\\ManusReader\\\\ManusReader.csproj\" 2>&1)",
+      "PowerShell(& \"C:\\\\Program Files\\\\dotnet\\\\dotnet.exe\" --list-sdks)",
+      "PowerShell(& \"C:\\\\Program Files\\\\dotnet\\\\dotnet.exe\" --info 2>&1)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "PowerShell(& \"C:\\\\Program Files \\(x86\\)\\\\dotnet\\\\dotnet.exe\" --list-sdks 2>&1)",
+      "PowerShell(Test-Path \"$env:LOCALAPPDATA\\\\dotnet-sdk\\\\dotnet.exe\")",
+      "PowerShell(& \"$env:LOCALAPPDATA\\\\dotnet-sdk\\\\dotnet.exe\" build \"c:\\\\Users\\\\Finbom\\\\VSCode\\\\ManusTraning\\\\ManusReader\\\\ManusReader.csproj\" 2>&1)"
+    ]
+  }
+}
