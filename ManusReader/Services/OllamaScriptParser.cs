@@ -48,19 +48,66 @@ public class OllamaScriptParser
 
     // ------------------------------------------------------------------ main entry point
 
-    public async Task<(List<ScriptLine> Lines, HashSet<string> Roles)> ParseAsync(
-        string rawText, IProgress<string>? progress = null)
+    public async Task<ParseResult> ParseAsync(
+        string rawText, IProgress<ParseProgress>? progress = null)
     {
         var allLines = new List<ScriptLine>();
         var roles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int lineNum = 0;
+        int failedChunks = 0;
+        int salvagedLines = 0;
 
-        var chunks = SplitIntoChunks(rawText, maxLines: 60).ToList();
+        var sourceLines = rawText
+            .Split('\n')
+            .Count(l => !string.IsNullOrWhiteSpace(l));
+
+        var chunks = SplitIntoChunks(rawText, maxLines: 35).ToList();
 
         for (int i = 0; i < chunks.Count; i++)
         {
-            progress?.Report($"Analyserar del {i + 1} av {chunks.Count} med AI...");
-            var parsed = await ParseChunkAsync(chunks[i]);
+            // Report i completed chunks before starting chunk i+1.
+            progress?.Report(new ParseProgress(i, chunks.Count));
+
+            var chunk = chunks[i];
+            var chunkSourceLines = chunk.Split('\n').Count(l => !string.IsNullOrWhiteSpace(l));
+            var chunkHasContent = chunkSourceLines > 0;
+
+            List<ParsedLine> parsed;
+            try
+            {
+                parsed = await ParseChunkAsync(chunk);
+
+                // Retry once if the model returned nothing for a non-empty chunk.
+                if (parsed.Count == 0 && chunkHasContent)
+                    parsed = await ParseChunkAsync(chunk);
+            }
+            catch
+            {
+                parsed = [];
+            }
+
+            // Sanity check: the model sometimes returns valid JSON but silently
+            // drops most lines. If it produced far fewer lines than the source
+            // chunk, compare against the rule-based parser and keep whichever
+            // captured more — so content is never silently lost.
+            var looksDeficient = chunkHasContent &&
+                                 parsed.Count < chunkSourceLines * 0.4;
+            if (looksDeficient)
+            {
+                var (rescued, rescuedRoles) = TextScriptParser.Parse(chunk);
+                if (rescued.Count > parsed.Count)
+                {
+                    failedChunks++;
+                    foreach (var r in rescued)
+                    {
+                        r.LineNumber = lineNum++;
+                        allLines.Add(r);
+                    }
+                    salvagedLines += rescued.Count;
+                    foreach (var rr in rescuedRoles) roles.Add(rr);
+                    continue;
+                }
+            }
 
             foreach (var p in parsed)
             {
@@ -82,26 +129,62 @@ public class OllamaScriptParser
             }
         }
 
-        return (allLines, roles);
+        progress?.Report(new ParseProgress(chunks.Count, chunks.Count));
+
+        var unknownLines = allLines.Count(l => l.IsUnknown);
+        var stats = new ParseStats(
+            SourceLines: sourceLines,
+            ParsedLines: allLines.Count,
+            Chunks: chunks.Count,
+            FailedChunks: failedChunks,
+            SalvagedLines: salvagedLines,
+            UnknownLines: unknownLines,
+            Roles: roles.Count);
+
+        return new ParseResult(allLines, roles, stats);
     }
+
+    // Progress update from AI parsing: how many chunks are completed out of the total.
+    public record ParseProgress(int Completed, int Total);
+
+    // Result of a full parse, including diagnostics shown to the user afterwards.
+    public record ParseResult(List<ScriptLine> Lines, HashSet<string> Roles, ParseStats Stats);
+
+    public record ParseStats(
+        int SourceLines, int ParsedLines, int Chunks,
+        int FailedChunks, int SalvagedLines, int UnknownLines, int Roles);
 
     // ------------------------------------------------------------------ chunk parsing
 
     private async Task<List<ParsedLine>> ParseChunkAsync(string chunk)
     {
         var prompt = $$"""
-            Du är expert på teatermauser. Analysera texten nedan och extrahera ALLA repliker.
+            Du är expert på teatermanus (svenska och engelska). Extrahera VARJE replik ur texten.
 
-            Returnera ENBART giltig JSON i detta exakta format (ingen preamble, inget kodblock):
+            ABSOLUT VIKTIGAST:
+            - Hoppa INTE över någon replik. Sammanfatta INTE. Korta INTE ner.
+            - Behåll repliktexten ORDAGRANT, exakt som i originalet.
+            - Varje rad med dialog i texten ska bli ett objekt i "lines".
+
+            Formateringsregler:
+            - Text inom **dubbla asterisker** är fetstil i originalet.
+            - Om en rad BÖRJAR med **fetstilstext** på 1–4 ord är det ett ROLLNAMN.
+              Resten av samma rad (efter eventuellt kolon/mellanslag) är repliken.
+              Exempel: "**ANNA** Du behöver inte oroa dig." → role: ANNA, text: "Du behöver inte oroa dig."
+              Exempel: "**LISA:**" (ensam rad) → role: LISA, nästa rad är repliken.
+            - "NAMN: replik" eller "NAME: line" → role: NAMN, text: replik.
+            - Är fetstilstexten längre än 4 ord är det troligen inte ett rollnamn.
+
+            Returnera ENBART giltig JSON i detta exakta format:
             {"lines":[{"role":"ROLLNAMN","text":"repliktext","stage":false,"confidence":"high"}]}
 
             Regler:
             - "role": rollnamnet i VERSALER. Scenanvisning → "[Scenanvisning]". Osäker → "unknown"
-            - "text": exakt repliktext
-            - "stage": true om scenanvisning, annars false
+            - "text": repliktext utan rollnamnet
+            - "stage": true om scenanvisning (text inom parentes), annars false
             - "confidence": "high" = säker, "medium" = trolig, "low" = osäker
             - Om confidence är "medium" eller "low" MÅSTE role vara "unknown"
-            - Skippa tomma rader, sidnummer och rubriker
+            - Skippa endast helt tomma rader och sidnummer
 
             Text:
             {{chunk}}
@@ -111,7 +194,14 @@ public class OllamaScriptParser
         {
             model = Model,
             messages = new[] { new { role = "user", content = prompt } },
-            stream = false
+            stream = false,
+            format = "json",     // force grammatically valid JSON output
+            options = new
+            {
+                temperature = 0,  // deterministic, less likely to omit lines
+                num_ctx = 8192,   // larger context so big chunks aren't truncated
+                num_predict = -1  // no output-length cap
+            }
         });
 
         var response = await Http.PostAsync(
