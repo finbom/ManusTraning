@@ -321,22 +321,37 @@ namespace ManusReader
             var gender = NameGender.Guess(roleName)
                          ?? (index % 2 == 0 ? VoiceGender.Man : VoiceGender.Kvinna);
 
-            // Pick a voice of that gender, cycling so different roles of the same
-            // gender don't all share the first matching voice.
+            // Always prefer a Swedish voice — the script is read aloud in Swedish
+            // even when a character has a foreign (e.g. English) name. Only fall
+            // back to non-Swedish voices if no Swedish voice of that gender exists.
             var sameGender = _voices.Where(v => v.Gender == gender).ToList();
-            var voice = sameGender.Count > 0
-                ? sameGender[index % sameGender.Count]
-                : _voices.FirstOrDefault();
+            var swedishSameGender = sameGender.Where(IsSwedishVoice).ToList();
+            var pool = swedishSameGender.Count > 0 ? swedishSameGender
+                     : sameGender.Count > 0 ? sameGender
+                     : _voices;
+            var voice = pool.Count > 0 ? pool[index % pool.Count] : default;
 
             var profile = new VoiceProfile { RoleName = roleName, Gender = gender };
+
+            // Gender-aware Swedish fallback if the voice catalog is empty.
+            var defaultAzure = gender == VoiceGender.Kvinna
+                ? "sv-SE-SofieNeural" : "sv-SE-MattiasNeural";
 
             if (_settings.Provider == TtsProvider.Natural)
                 profile.NaturalVoiceName = voice.Name ?? WindowsTtsService.DefaultVoiceName();
             else
-                profile.VoiceName = voice.Name ?? "sv-SE-MattiasNeural";
+                profile.VoiceName = voice.Name ?? defaultAzure;
 
             return profile;
         }
+
+        // True if a voice is Swedish (Azure names start with "sv-"; Windows voices
+        // carry their culture in the display name, e.g. "Microsoft Bengt (SV)").
+        private static bool IsSwedishVoice((string Name, string Display, VoiceGender Gender) v) =>
+            (v.Name?.StartsWith("sv-", StringComparison.OrdinalIgnoreCase) ?? false)
+            || (v.Display?.Contains("(SV)", StringComparison.OrdinalIgnoreCase) ?? false)
+            || (v.Display?.Contains("swedish", StringComparison.OrdinalIgnoreCase) ?? false)
+            || (v.Name?.Contains("swedish", StringComparison.OrdinalIgnoreCase) ?? false);
 
         private string ActiveVoiceName(VoiceProfile p) =>
             _settings.Provider == TtsProvider.Natural ? p.NaturalVoiceName : p.VoiceName;
