@@ -25,6 +25,9 @@ namespace ManusReader
         private VoiceProfile? _selectedProfile;
         private int _currentLineIndex = -1;
         private bool _isPlaying;
+        private bool _autoPlay;
+        private System.Threading.CancellationTokenSource? _autoCts;
+        private System.Threading.CancellationTokenSource? _stepCts;
         private int _speechVersion;
         private bool _suppressProfileUpdate;
         private string? _currentProjectPath;
@@ -232,6 +235,13 @@ namespace ManusReader
             }
 
             RefreshVoiceList();
+
+            // Rehearsal pause controls
+            PauseBetweenBox.Text = _settings.PauseBetweenSeconds.ToString("0.#",
+                System.Globalization.CultureInfo.InvariantCulture);
+            MyLineAutoCheck.IsChecked = _settings.MyLineAuto;
+            MyLineSecondsBox.Text = _settings.MyLineSeconds.ToString("0.#",
+                System.Globalization.CultureInfo.InvariantCulture);
         }
 
         private void RefreshVoiceList()
@@ -1018,6 +1028,7 @@ namespace ManusReader
         {
             _speechVersion++;
             _isPlaying = false;
+            _autoCts?.Cancel();          // stop rehearsal autoplay if running
             _ttsService.StopSpeaking();
             UpdateStartStopButton();
 
@@ -1036,10 +1047,183 @@ namespace ManusReader
             if (Keyboard.FocusedElement is TextBox or ComboBox) return;
 
             e.Handled = true;
+
+            if (_autoPlay)
+            {
+                // In rehearsal mode, Space skips ahead to the next line.
+                SkipStep();
+                return;
+            }
+
             _speechVersion++;                  // cancel current speech
             _ttsService.StopSpeaking();
             AdvanceToNextLine();
         }
+
+        // ================================================================== rehearsal (autoplay)
+        private void Rehearse_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isPlaying) { StopPlayback(); return; }
+            StartRehearsal();
+        }
+
+        private async void StartRehearsal()
+        {
+            if (_scriptLines.Count == 0)
+            {
+                MessageBox.Show("Öppna ett manus först.",
+                    "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            if (!EnsureTtsConfigured()) return;
+
+            // Read pause settings from the UI and persist them.
+            var pauseBetween = ParseSeconds(PauseBetweenBox.Text, 0.7);
+            var myAuto = MyLineAutoCheck.IsChecked == true;
+            var myFixed = ParseSeconds(MyLineSecondsBox.Text, 3.0);
+            _settings.PauseBetweenSeconds = pauseBetween;
+            _settings.MyLineAuto = myAuto;
+            _settings.MyLineSeconds = myFixed;
+
+            // Start from the selected row, otherwise from the beginning.
+            int start = 0;
+            if (ScriptDataGrid.SelectedItem is ScriptLine sel)
+            {
+                var i = _scriptLines.IndexOf(sel);
+                if (i >= 0) start = i;
+            }
+
+            _autoCts?.Cancel();
+            _autoCts = new System.Threading.CancellationTokenSource();
+            var sessionToken = _autoCts.Token;
+
+            _isPlaying = true;
+            _autoPlay = true;
+            UpdateStartStopButton();
+
+            try
+            {
+                for (int i = start; i < _scriptLines.Count; i++)
+                {
+                    sessionToken.ThrowIfCancellationRequested();
+
+                    using var stepCts =
+                        System.Threading.CancellationTokenSource.CreateLinkedTokenSource(sessionToken);
+                    _stepCts = stepCts;
+                    var stepToken = stepCts.Token;
+
+                    var line = _scriptLines[i];
+                    HighlightLine(i);
+
+                    try
+                    {
+                        if (line.ShouldRead)
+                        {
+                            // Computer's line — speak it, then pause.
+                            var profile = ResolveProfile(line);
+                            SetStatus($"💻 Datorn läser: {line.RoleName} (Mellanslag = hoppa)");
+                            await _ttsService.SpeakAsync(line.Text, profile);
+                            stepToken.ThrowIfCancellationRequested();
+                            await Task.Delay(MsFromSeconds(pauseBetween), stepToken);
+                        }
+                        else if (!line.IsStageDirection && !line.IsUnknown)
+                        {
+                            // Your line — wait so you can say it out loud.
+                            var ms = myAuto ? EstimateMyLineMs(line.Text) : MsFromSeconds(myFixed);
+                            SetStatus($"🎤 Din replik: {line.RoleName} – säg den nu " +
+                                      $"({ms / 1000.0:0.#}s, Mellanslag = klar)");
+                            await Task.Delay(ms, stepToken);
+                        }
+                        else
+                        {
+                            // Stage direction / unassigned line — skip briefly.
+                            await Task.Delay(150, stepToken);
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Whole session stopped → exit; single step skipped → continue.
+                        if (sessionToken.IsCancellationRequested) throw;
+                    }
+                }
+
+                SetStatus("Repetition klar! 🎉");
+            }
+            catch (OperationCanceledException)
+            {
+                SetStatus("Repetition stoppad");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"TTS-fel:\n{ex.Message}", "Fel",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                _stepCts = null;
+                _autoPlay = false;
+                _isPlaying = false;
+                UpdateStartStopButton();
+                if (_currentLineIndex >= 0 && _currentLineIndex < _scriptLines.Count)
+                    _scriptLines[_currentLineIndex].IsCurrent = false;
+                _currentLineIndex = -1;
+                CurrentLineText.Text = "";
+            }
+        }
+
+        // Advances the autoplay loop past the current line (speech + pause).
+        private void SkipStep()
+        {
+            _ttsService.StopSpeaking();
+            _stepCts?.Cancel();
+        }
+
+        private void HighlightLine(int index)
+        {
+            if (_currentLineIndex >= 0 && _currentLineIndex < _scriptLines.Count)
+                _scriptLines[_currentLineIndex].IsCurrent = false;
+
+            _currentLineIndex = index;
+            if (index < 0 || index >= _scriptLines.Count) return;
+
+            var line = _scriptLines[index];
+            line.IsCurrent = true;
+            ScriptDataGrid.ScrollIntoView(line);
+            ScriptDataGrid.SelectedItem = line;
+            CurrentLineText.Text = $"[{line.RoleName}]  {line.Text}";
+            UpdateProgress();
+        }
+
+        private VoiceProfile ResolveProfile(ScriptLine line)
+        {
+            var profile = _voiceProfiles.FirstOrDefault(p =>
+                string.Equals(p.RoleName, line.RoleName, StringComparison.OrdinalIgnoreCase));
+            if (profile == null)
+            {
+                profile = CreateDefaultProfile(line.RoleName, _voiceProfiles.Count);
+                _voiceProfiles.Add(profile);
+            }
+            return profile;
+        }
+
+        // Estimates how long a spoken line takes, to pace the pause for the user's
+        // own lines. ~130 words/min plus a small buffer, clamped to 1.5–20 s.
+        private static int EstimateMyLineMs(string text)
+        {
+            var words = text.Split((char[]?)null,
+                StringSplitOptions.RemoveEmptyEntries).Length;
+            var seconds = words / 130.0 * 60.0 + 0.8;
+            return (int)(Math.Clamp(seconds, 1.5, 20.0) * 1000);
+        }
+
+        private static int MsFromSeconds(double s) =>
+            (int)(Math.Clamp(s, 0, 60) * 1000);
+
+        private static double ParseSeconds(string text, double fallback) =>
+            double.TryParse(text?.Replace(',', '.'),
+                System.Globalization.NumberStyles.Any,
+                System.Globalization.CultureInfo.InvariantCulture, out var v) && v >= 0
+                ? v : fallback;
 
         private async void AdvanceToNextLine()
         {

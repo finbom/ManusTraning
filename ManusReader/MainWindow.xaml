@@ -75,9 +75,30 @@
                     ToolTip="Starta/stoppa manusläsning (Space = nästa replik)">
                 ▶  Starta manusläsning
             </Button>
+            <Button x:Name="RehearseButton" Click="Rehearse_Click"
+                    Padding="12,6" FontWeight="Bold" FontSize="13"
+                    Background="#1976D2" Foreground="White" BorderBrush="#0D47A1"
+                    ToolTip="Spela hela manuset automatiskt och pausa vid dina repliker så du kan öva mot datorn">
+                🎭  Repetera (auto)
+            </Button>
+            <Separator/>
+            <TextBlock VerticalAlignment="Center" Margin="6,0,2,0" FontSize="11"
+                       Text="Paus mellan repliker:"/>
+            <TextBox x:Name="PauseBetweenBox" Width="34" Text="0.7"
+                     VerticalAlignment="Center" VerticalContentAlignment="Center"
+                     ToolTip="Sekunder paus efter varje replik datorn läser"/>
+            <TextBlock VerticalAlignment="Center" Margin="2,0,10,0" FontSize="11" Text="s"/>
+            <CheckBox x:Name="MyLineAutoCheck" IsChecked="True" VerticalAlignment="Center"
+                      Content="Auto-paus för mina repliker" FontSize="11"
+                      ToolTip="Pausen för dina egna repliker beräknas automatiskt från replikens längd"/>
+            <TextBlock VerticalAlignment="Center" Margin="8,0,2,0" FontSize="11" Text="annars"/>
+            <TextBox x:Name="MyLineSecondsBox" Width="34" Text="3"
+                     VerticalAlignment="Center" VerticalContentAlignment="Center"
+                     ToolTip="Fast antal sekunder för dina repliker (används när auto-paus är avstängt)"/>
+            <TextBlock VerticalAlignment="Center" Margin="2,0,10,0" FontSize="11" Text="s"/>
             <Separator/>
             <TextBlock VerticalAlignment="Center" Margin="6,0" Foreground="#666"
-                       FontSize="11" Text="[Mellanslag] = Nästa replik"/>
+                       FontSize="11" Text="[Mellanslag] = hoppa / nästa"/>
         </ToolBar>
 
         <!-- ===== STATUSFÄLT ===== -->
