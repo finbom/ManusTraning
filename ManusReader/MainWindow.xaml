@@ -40,6 +40,8 @@
                 <MenuItem Header="Spara projekt" Click="SaveProject_Click" InputGestureText="Ctrl+S"/>
                 <MenuItem Header="Spara projekt som..." Click="SaveProjectAs_Click"/>
                 <Separator/>
+                <MenuItem Header="Exportera repetition som MP3..." Click="ExportAudio_Click"/>
+                <Separator/>
                 <MenuItem Header="Avsluta" Click="Exit_Click" InputGestureText="Alt+F4"/>
             </MenuItem>
             <MenuItem Header="Inställningar">
@@ -344,7 +346,7 @@
                         <DropShadowEffect BlurRadius="20" ShadowDepth="0" Opacity="0.3"/>
                     </Border.Effect>
                     <StackPanel>
-                        <TextBlock Text="🤖 Analyserar manus med AI"
+                        <TextBlock x:Name="ProgressOverlayTitle" Text="🤖 Analyserar manus med AI"
                                    FontSize="17" FontWeight="SemiBold"
                                    HorizontalAlignment="Center"/>
                         <TextBlock x:Name="AiProgressStep" Text="Förbereder analys…"

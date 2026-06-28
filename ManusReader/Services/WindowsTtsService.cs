@@ -46,6 +46,26 @@ public class WindowsTtsService : ITtsService
 
     // ------------------------------------------------------------------ playback
 
+    // Rate maps the profile's -50..+50 range to the SAPI -10..+10 property.
+    public static int RateFor(VoiceProfile profile) =>
+        (int)Math.Clamp(profile.Rate / 5.0, -10, 10);
+
+    // Builds SSML with pitch in semitones (-50..+50 → -10..+10 st). xml:lang="sv-SE"
+    // tells the engine to apply Swedish pronunciation rules. Shared by playback and
+    // audio export so the exported file sounds identical to live playback.
+    public static string BuildSsml(string text, VoiceProfile profile)
+    {
+        var pitchSt = (int)Math.Clamp(profile.Pitch / 5.0, -10, 10);
+        var pitchStr = pitchSt >= 0 ? $"+{pitchSt}st" : $"{pitchSt}st";
+        var escaped = SecurityElement.Escape(text);
+
+        return $"""
+            <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="sv-SE">
+              <prosody pitch="{pitchStr}">{escaped}</prosody>
+            </speak>
+            """;
+    }
+
     public Task SpeakAsync(string text, VoiceProfile profile)
     {
         StopSpeaking();
@@ -58,26 +78,12 @@ public class WindowsTtsService : ITtsService
             catch { /* fall back to default voice */ }
         }
 
-        // Rate via SAPI property (-10..+10); SSML prosody rate would override this,
-        // so we omit rate from SSML and let the property control it.
-        _synth.Rate = (int)Math.Clamp(profile.Rate / 5.0, -10, 10);
+        _synth.Rate = RateFor(profile);
         _synth.Volume = 100;
-
-        // Pitch via SSML semitones (-50..+50 → -10..+10 st).
-        // xml:lang="sv-SE" tells the engine to apply Swedish pronunciation rules.
-        var pitchSt = (int)Math.Clamp(profile.Pitch / 5.0, -10, 10);
-        var pitchStr = pitchSt >= 0 ? $"+{pitchSt}st" : $"{pitchSt}st";
-        var escaped = SecurityElement.Escape(text);
-
-        var ssml = $"""
-            <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="sv-SE">
-              <prosody pitch="{pitchStr}">{escaped}</prosody>
-            </speak>
-            """;
 
         _tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _synth.SpeakCompleted += (_, _) => _tcs?.TrySetResult(true);
-        _synth.SpeakSsmlAsync(ssml);
+        _synth.SpeakSsmlAsync(BuildSsml(text, profile));
 
         return _tcs.Task;
     }

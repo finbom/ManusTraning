@@ -76,15 +76,22 @@ namespace ManusReader
             _aiTimer.Tick += (_, _) => RefreshAiProgressText();
         }
 
-        // ================================================================== AI progress overlay
-        private void ShowAiProgress()
+        // ================================================================== progress overlay
+        private string _progressVerb = "Analyserar del";
+
+        private void ShowAiProgress(
+            string title = "🤖 Analyserar manus med AI",
+            string verb = "Analyserar del",
+            string preparing = "Förbereder analys…")
         {
+            _progressVerb = verb;
             _aiCompleted = 0;
             _aiTotal = 0;
             _aiStopwatch.Restart();
+            ProgressOverlayTitle.Text = title;
             AiProgressBar.IsIndeterminate = true;
             AiProgressBar.Value = 0;
-            AiProgressStep.Text = "Förbereder analys…";
+            AiProgressStep.Text = preparing;
             AiProgressPercent.Text = "";
             AiProgressEta.Text = "";
             AiProgressElapsed.Text = "";
@@ -124,7 +131,7 @@ namespace ManusReader
             var pct = (double)_aiCompleted / _aiTotal * 100;
             AiProgressPercent.Text = $"{pct:F0}%";
             AiProgressStep.Text =
-                $"Analyserar del {Math.Min(_aiCompleted + 1, _aiTotal)} av {_aiTotal}…";
+                $"{_progressVerb} {Math.Min(_aiCompleted + 1, _aiTotal)} av {_aiTotal}…";
 
             if (_aiCompleted > 0)
             {
@@ -1224,6 +1231,108 @@ namespace ManusReader
                 System.Globalization.NumberStyles.Any,
                 System.Globalization.CultureInfo.InvariantCulture, out var v) && v >= 0
                 ? v : fallback;
+
+        // ================================================================== audio export (MP3)
+        private async void ExportAudio_Click(object sender, RoutedEventArgs e)
+        {
+            if (_scriptLines.Count == 0)
+            {
+                MessageBox.Show("Öppna ett manus först.",
+                    "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (_settings.Provider != TtsProvider.Natural)
+            {
+                MessageBox.Show(
+                    "Ljudexport stöder just nu Windows-rösterna.\n\n" +
+                    "Växla till Windows-röster i TTS-inställningar för att exportera.",
+                    "Export", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (_isPlaying) StopPlayback();
+
+            // Same pause settings and line logic as rehearsal mode.
+            var pauseBetween = ParseSeconds(PauseBetweenBox.Text, 0.7);
+            var myAuto = MyLineAutoCheck.IsChecked == true;
+            var myFixed = ParseSeconds(MyLineSecondsBox.Text, 3.0);
+
+            var segments = new List<AudioExportService.Segment>();
+            foreach (var line in _scriptLines)
+            {
+                if (line.ShouldRead)
+                {
+                    var profile = ResolveProfile(line);
+                    segments.Add(new AudioExportService.SpeakSegment(line.Text, profile));
+                    segments.Add(new AudioExportService.SilenceSegment(MsFromSeconds(pauseBetween)));
+                }
+                else if (!line.IsStageDirection && !line.IsUnknown)
+                {
+                    var ms = myAuto ? EstimateMyLineMs(line.Text) : MsFromSeconds(myFixed);
+                    segments.Add(new AudioExportService.SilenceSegment(ms));
+                }
+            }
+
+            var speakCount = segments.Count(s => s is AudioExportService.SpeakSegment);
+            if (speakCount == 0)
+            {
+                MessageBox.Show(
+                    "Inga repliker är markerade för datorn att läsa, så ljudfilen " +
+                    "skulle bli tyst. Markera minst en replik som ska läsas.",
+                    "Export", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var dlg = new SaveFileDialog
+            {
+                Filter = "MP3-ljud (*.mp3)|*.mp3",
+                Title = "Exportera repetition som MP3",
+                FileName = (_currentScriptPath != null
+                    ? Path.GetFileNameWithoutExtension(_currentScriptPath)
+                    : "repetition") + ".mp3",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyMusic)
+            };
+            if (dlg.ShowDialog() != true) return;
+            var path = dlg.FileName;
+
+            ShowAiProgress(
+                title: "🎧 Exporterar repetition till MP3",
+                verb: "Spelar in replik",
+                preparing: "Förbereder inspelning…");
+            SetAiProgress(0, speakCount);
+
+            try
+            {
+                var progress = new Progress<AudioExportService.ExportProgress>(p =>
+                    Dispatcher.Invoke(() => SetAiProgress(p.Done, p.Total)));
+
+                await Task.Run(() =>
+                    AudioExportService.ExportMp3(path, segments, 96, progress));
+
+                HideAiProgress();
+
+                var sizeMb = new FileInfo(path).Length / 1024.0 / 1024.0;
+                var res = MessageBox.Show(
+                    $"Klart! Repetitionen sparades som MP3:\n{path}\n\n" +
+                    $"• Repliker inspelade: {speakCount}\n" +
+                    $"• Filstorlek: {sizeMb:0.0} MB\n\n" +
+                    "Vill du öppna mappen?",
+                    "Export klar", MessageBoxButton.YesNo, MessageBoxImage.Information);
+
+                if (res == MessageBoxResult.Yes)
+                    System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{path}\"");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Ljudexport misslyckades:\n{ex.Message}",
+                    "Fel", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                HideAiProgress();
+            }
+        }
 
         private async void AdvanceToNextLine()
         {
