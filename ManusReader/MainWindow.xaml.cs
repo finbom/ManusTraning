@@ -1422,7 +1422,10 @@ namespace ManusReader
         {
             if (_isPlaying)
             {
-                StartStopButton.Content = "⏹  Stoppa manusläsning";
+                // Show the relevant keyboard hint right in the button while playing.
+                StartStopButton.Content = _autoPlay
+                    ? "⏹  Stoppa  ·  Mellanslag = hoppa"
+                    : "⏹  Stoppa  ·  Mellanslag = nästa replik";
                 StartStopButton.Background = new SolidColorBrush(Color.FromRgb(229, 57, 53));
                 StartStopButton.BorderBrush = new SolidColorBrush(Color.FromRgb(183, 28, 28));
             }

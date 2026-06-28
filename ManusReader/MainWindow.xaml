@@ -100,7 +100,8 @@
             <TextBlock VerticalAlignment="Center" Margin="2,0,10,0" FontSize="11" Text="s"/>
             <Separator/>
             <TextBlock VerticalAlignment="Center" Margin="6,0" Foreground="#666"
-                       FontSize="11" Text="[Mellanslag] = hoppa / nästa"/>
+                       FontSize="11"
+                       Text="Starta = stega manuellt (Mellanslag)  ·  Repetera = spelar automatiskt"/>
         </ToolBar>
 
         <!-- ===== STATUSFÄLT ===== -->
