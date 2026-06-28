@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 using ManusReader.Models;
@@ -8,8 +9,17 @@ namespace ManusReader.Services;
 
 public static class WordScriptParser
 {
+    private record WordParagraph(string FullText, string BoldPrefix, string TrailingText);
+
+    // Returns true if a run is explicitly bold (handles <w:b/> and <w:b w:val="1"/>).
+    private static bool IsBoldRun(Run run)
+    {
+        var bold = run.RunProperties?.Bold;
+        if (bold == null) return false;
+        return bold.Val == null || bold.Val.Value;
+    }
+
     // Returns true if all letters in the string are uppercase (Swedish included).
-    // Allows spaces, digits, and punctuation but no lowercase letters.
     private static bool IsAllCaps(string text)
     {
         var letters = text.Where(char.IsLetter).ToArray();
@@ -29,28 +39,48 @@ public static class WordScriptParser
 
         foreach (var para in paragraphs)
         {
-            if (string.IsNullOrWhiteSpace(para)) continue;
+            var text = para.FullText;
 
-            // Stage direction
-            if (IsStageDirection(para))
+            // Stage direction: (text in parens)
+            if (IsStageDirection(text))
             {
                 lines.Add(new ScriptLine
                 {
                     LineNumber = lineNum++,
                     RoleName = "[Scenanvisning]",
-                    Text = para,
+                    Text = text,
                     IsStageDirection = true,
                     ShouldRead = false
                 });
                 continue;
             }
 
-            // "NAME: dialog text" on same line
-            var colonIdx = para.IndexOf(':');
-            if (colonIdx > 0 && colonIdx < para.Length - 1)
+            // Bold prefix = role name (primary detection — takes priority)
+            if (!string.IsNullOrEmpty(para.BoldPrefix))
             {
-                var candidate = para[..colonIdx].Trim();
-                var dialog = para[(colonIdx + 1)..].Trim();
+                currentRole = para.BoldPrefix.TrimEnd(':', ' ').Trim().ToUpper();
+                roles.Add(currentRole);
+
+                if (!string.IsNullOrEmpty(para.TrailingText))
+                {
+                    lines.Add(new ScriptLine
+                    {
+                        LineNumber = lineNum++,
+                        RoleName = currentRole,
+                        Text = para.TrailingText,
+                        ShouldRead = true
+                    });
+                }
+                // If TrailingText is empty the next paragraph is the dialogue.
+                continue;
+            }
+
+            // "NAME: dialog text" on same line
+            var colonIdx = text.IndexOf(':');
+            if (colonIdx > 0 && colonIdx < text.Length - 1)
+            {
+                var candidate = text[..colonIdx].Trim();
+                var dialog = text[(colonIdx + 1)..].Trim();
                 if (IsAllCaps(candidate) && candidate.Split(' ').Length <= 5)
                 {
                     currentRole = candidate;
@@ -60,7 +90,6 @@ public static class WordScriptParser
                         LineNumber = lineNum++,
                         RoleName = currentRole,
                         Text = dialog,
-                        IsStageDirection = false,
                         ShouldRead = true
                     });
                     continue;
@@ -68,9 +97,9 @@ public static class WordScriptParser
             }
 
             // Pure all-caps line = role name on its own row
-            if (IsAllCaps(para) && para.Split(' ').Length <= 5)
+            if (IsAllCaps(text) && text.Split(' ').Length <= 5)
             {
-                currentRole = para.Trim();
+                currentRole = text.Trim();
                 roles.Add(currentRole);
                 continue;
             }
@@ -78,27 +107,24 @@ public static class WordScriptParser
             // Dialog belonging to currentRole
             if (currentRole != null)
             {
-                // Append to last line if same role continues, otherwise new line
                 if (lines.Count > 0 && lines[^1].RoleName == currentRole && !lines[^1].IsStageDirection)
-                    lines[^1].Text += " " + para;
+                    lines[^1].Text += " " + text;
                 else
                     lines.Add(new ScriptLine
                     {
                         LineNumber = lineNum++,
                         RoleName = currentRole,
-                        Text = para,
-                        IsStageDirection = false,
+                        Text = text,
                         ShouldRead = true
                     });
             }
             else
             {
-                // Text before any role — treat as stage direction
                 lines.Add(new ScriptLine
                 {
                     LineNumber = lineNum++,
                     RoleName = "[Scenanvisning]",
-                    Text = para,
+                    Text = text,
                     IsStageDirection = true,
                     ShouldRead = false
                 });
@@ -108,14 +134,50 @@ public static class WordScriptParser
         return (lines, roles);
     }
 
-    private static List<string> ReadParagraphs(string filePath)
+    private static List<WordParagraph> ReadParagraphs(string filePath)
     {
         using var doc = WordprocessingDocument.Open(filePath, false);
         var body = doc.MainDocumentPart?.Document?.Body;
         if (body == null) return [];
 
-        return body.Descendants<Paragraph>()
-            .Select(p => p.InnerText.Trim())
-            .ToList();
+        var result = new List<WordParagraph>();
+
+        foreach (var para in body.Descendants<Paragraph>())
+        {
+            var fullText = para.InnerText.Trim();
+            if (string.IsNullOrWhiteSpace(fullText)) continue;
+
+            // Collect runs and split into leading bold / trailing rest.
+            var boldSb = new StringBuilder();
+            var restSb = new StringBuilder();
+            bool inBoldSection = true;
+
+            foreach (var run in para.Descendants<Run>())
+            {
+                var runText = run.InnerText;
+                if (string.IsNullOrEmpty(runText)) continue;
+
+                if (inBoldSection && IsBoldRun(run))
+                    boldSb.Append(runText);
+                else
+                {
+                    inBoldSection = false;
+                    restSb.Append(runText);
+                }
+            }
+
+            var boldText = boldSb.ToString().Trim();
+            // Strip leading colon/space from the trailing part (e.g. ": dialog text")
+            var restText = restSb.ToString().Trim().TrimStart(':').Trim();
+
+            // Only treat bold prefix as a role name if it is short (1–4 words).
+            var wordCount = boldText.Split(' ', System.StringSplitOptions.RemoveEmptyEntries).Length;
+            if (!string.IsNullOrEmpty(boldText) && wordCount <= 4)
+                result.Add(new WordParagraph(fullText, boldText, restText));
+            else
+                result.Add(new WordParagraph(fullText, "", fullText));
+        }
+
+        return result;
     }
 }
