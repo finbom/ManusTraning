@@ -1048,23 +1048,27 @@ namespace ManusReader
 
         private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
         {
-            if (e.Key != Key.Space || !_isPlaying) return;
+            if (!_isPlaying) return;
 
-            // Ignore space if a text-input control has focus
+            // Only react to the keys we care about.
+            bool forward = e.Key is Key.Space or Key.Right or Key.Down;
+            bool back = e.Key is Key.Left or Key.Up;
+            if (!forward && !back) return;
+
+            // Ignore navigation keys if a text-input control has focus
             if (Keyboard.FocusedElement is TextBox or ComboBox) return;
 
             e.Handled = true;
 
             if (_autoPlay)
             {
-                // In rehearsal mode, Space skips ahead to the next line.
-                SkipStep();
+                // In rehearsal mode, Space (or forward keys) skips ahead.
+                if (forward) SkipStep();
                 return;
             }
 
-            _speechVersion++;                  // cancel current speech
-            _ttsService.StopSpeaking();
-            AdvanceToNextLine();
+            // Manual mode: arrows step back/forward, Space goes forward.
+            PlayInDirection(forward ? +1 : -1);
         }
 
         // ================================================================== rehearsal (autoplay)
@@ -1334,21 +1338,22 @@ namespace ManusReader
             }
         }
 
-        private async void AdvanceToNextLine()
+        private void AdvanceToNextLine() => PlayInDirection(+1);
+
+        // Moves to the next/previous readable line (direction +1 forward, -1 back)
+        // and speaks it. Used by Space and the arrow keys in manual playback.
+        private async void PlayInDirection(int direction)
         {
-            int myVersion = ++_speechVersion;
+            // Find the next readable line in the requested direction.
+            int target = _currentLineIndex + direction;
+            while (target >= 0 && target < _scriptLines.Count && !_scriptLines[target].ShouldRead)
+                target += direction;
 
-            // Clear old highlight
-            if (_currentLineIndex >= 0 && _currentLineIndex < _scriptLines.Count)
-                _scriptLines[_currentLineIndex].IsCurrent = false;
-
-            // Find next readable line
-            int next = _currentLineIndex + 1;
-            while (next < _scriptLines.Count && !_scriptLines[next].ShouldRead)
-                next++;
-
-            if (next >= _scriptLines.Count)
+            // Reached the end going forward → finish.
+            if (direction > 0 && target >= _scriptLines.Count)
             {
+                if (_currentLineIndex >= 0 && _currentLineIndex < _scriptLines.Count)
+                    _scriptLines[_currentLineIndex].IsCurrent = false;
                 _isPlaying = false;
                 UpdateStartStopButton();
                 _currentLineIndex = -1;
@@ -1358,26 +1363,30 @@ namespace ManusReader
                 return;
             }
 
-            _currentLineIndex = next;
+            // Reached the start going back → stay put, keep current highlight.
+            if (direction < 0 && target < 0)
+            {
+                SetStatus("Redan vid första repliken");
+                return;
+            }
+
+            int myVersion = ++_speechVersion;
+            _ttsService.StopSpeaking();
+
+            // Move highlight from the old line to the target line.
+            if (_currentLineIndex >= 0 && _currentLineIndex < _scriptLines.Count)
+                _scriptLines[_currentLineIndex].IsCurrent = false;
+
+            _currentLineIndex = target;
             var line = _scriptLines[_currentLineIndex];
             line.IsCurrent = true;
 
-            Dispatcher.Invoke(() =>
-            {
-                ScriptDataGrid.ScrollIntoView(line);
-                ScriptDataGrid.SelectedItem = line;
-                CurrentLineText.Text = $"[{line.RoleName}]  {line.Text}";
-                UpdateProgress();
-            });
+            ScriptDataGrid.ScrollIntoView(line);
+            ScriptDataGrid.SelectedItem = line;
+            CurrentLineText.Text = $"[{line.RoleName}]  {line.Text}";
+            UpdateProgress();
 
-            var profile = _voiceProfiles.FirstOrDefault(p =>
-                string.Equals(p.RoleName, line.RoleName, StringComparison.OrdinalIgnoreCase));
-
-            if (profile == null)
-            {
-                profile = CreateDefaultProfile(line.RoleName, _voiceProfiles.Count);
-                Dispatcher.Invoke(() => _voiceProfiles.Add(profile));
-            }
+            var profile = ResolveProfile(line);
 
             SetStatus($"Läser: {line.RoleName} — replik {_currentLineIndex + 1}");
 
@@ -1389,20 +1398,15 @@ namespace ManusReader
             {
                 if (myVersion == _speechVersion && _isPlaying)
                 {
-                    Dispatcher.Invoke(() =>
-                    {
-                        MessageBox.Show($"TTS-fel:\n{ex.Message}", "Fel",
-                            MessageBoxButton.OK, MessageBoxImage.Error);
-                        StopPlayback();
-                    });
+                    MessageBox.Show($"TTS-fel:\n{ex.Message}", "Fel",
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                    StopPlayback();
                 }
             }
             finally
             {
-                // If this version is still current, show "ready for next" status
                 if (myVersion == _speechVersion && _isPlaying)
-                    Dispatcher.Invoke(() => SetStatus(
-                        $"Klar – tryck Mellanslag för nästa ({line.RoleName})"));
+                    SetStatus($"Klar – Mellanslag/pil för nästa, pil vänster tillbaka ({line.RoleName})");
             }
         }
 
@@ -1425,7 +1429,7 @@ namespace ManusReader
                 // Show the relevant keyboard hint right in the button while playing.
                 StartStopButton.Content = _autoPlay
                     ? "⏹  Stoppa  ·  Mellanslag = hoppa"
-                    : "⏹  Stoppa  ·  Mellanslag = nästa replik";
+                    : "⏹  Stoppa  ·  Mellanslag/→ nästa  ·  ← tillbaka";
                 StartStopButton.Background = new SolidColorBrush(Color.FromRgb(229, 57, 53));
                 StartStopButton.BorderBrush = new SolidColorBrush(Color.FromRgb(183, 28, 28));
             }

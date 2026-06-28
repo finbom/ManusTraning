@@ -101,7 +101,7 @@
             <Separator/>
             <TextBlock VerticalAlignment="Center" Margin="6,0" Foreground="#666"
                        FontSize="11"
-                       Text="Starta = stega manuellt (Mellanslag)  ·  Repetera = spelar automatiskt"/>
+                       Text="Starta = manuellt (Mellanslag/→ nästa, ← tillbaka)  ·  Repetera = automatiskt"/>
         </ToolBar>
 
         <!-- ===== STATUSFÄLT ===== -->
