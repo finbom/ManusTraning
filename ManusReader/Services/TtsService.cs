@@ -24,25 +24,29 @@ namespace ManusReader.Services
             _synthesizer = new SpeechSynthesizer(speechConfig);
         }
 
-        public async Task SpeakAsync(string text, VoiceProfile profile)
+        // Builds Azure SSML with voice, rate and pitch. Shared by playback and the
+        // audio export so the exported file matches live playback.
+        public static string BuildSsml(string text, VoiceProfile profile, string lang)
         {
-            if (_synthesizer == null)
-                throw new InvalidOperationException("TTS är inte konfigurerat.");
-
             var rateStr = profile.Rate >= 0 ? $"+{profile.Rate:F0}%" : $"{profile.Rate:F0}%";
             var pitchStr = profile.Pitch >= 0 ? $"+{profile.Pitch:F0}%" : $"{profile.Pitch:F0}%";
             var escaped = SecurityElement.Escape(text);
-            var lang = _config!.Language;
 
-            var ssml = $"""
+            return $"""
                 <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="{lang}">
                   <voice name="{profile.VoiceName}">
                     <prosody rate="{rateStr}" pitch="{pitchStr}">{escaped}</prosody>
                   </voice>
                 </speak>
                 """;
+        }
 
-            await _synthesizer.SpeakSsmlAsync(ssml);
+        public async Task SpeakAsync(string text, VoiceProfile profile)
+        {
+            if (_synthesizer == null)
+                throw new InvalidOperationException("TTS är inte konfigurerat.");
+
+            await _synthesizer.SpeakSsmlAsync(BuildSsml(text, profile, _config!.Language));
         }
 
         public void StopSpeaking()

@@ -1246,11 +1246,12 @@ namespace ManusReader
                 return;
             }
 
-            if (_settings.Provider != TtsProvider.Natural)
+            if (_settings.Provider == TtsProvider.Azure && !_ttsService.IsConfigured)
             {
                 MessageBox.Show(
-                    "Ljudexport stöder just nu Windows-rösterna.\n\n" +
-                    "Växla till Windows-röster i TTS-inställningar för att exportera.",
+                    "Azure-rösterna är inte konfigurerade.\n\n" +
+                    "Ange nyckel och region i TTS-inställningar, eller växla till " +
+                    "Windows-röster, för att exportera.",
                     "Export", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
@@ -1311,8 +1312,17 @@ namespace ManusReader
                 var progress = new Progress<AudioExportService.ExportProgress>(p =>
                     Dispatcher.Invoke(() => SetAiProgress(p.Done, p.Total)));
 
+                // Pick the renderer matching the active voice engine.
+                AudioExportService.IPcmRenderer renderer =
+                    _settings.Provider == TtsProvider.Azure
+                        ? new AudioExportService.AzurePcmRenderer(_settings.Azure)
+                        : new AudioExportService.WindowsPcmRenderer();
+
                 await Task.Run(() =>
-                    AudioExportService.ExportMp3(path, segments, 96, progress));
+                {
+                    using (renderer)
+                        AudioExportService.ExportMp3(path, segments, renderer, 96, progress);
+                });
 
                 HideAiProgress();
 
