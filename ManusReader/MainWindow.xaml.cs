@@ -32,6 +32,13 @@ namespace ManusReader
         private AppSettings _settings = new();
         private ITtsService _ttsService = new WindowsTtsService();
 
+        // ------------------------------------------------------------------ AI progress
+        private readonly System.Windows.Threading.DispatcherTimer _aiTimer =
+            new() { Interval = TimeSpan.FromSeconds(1) };
+        private readonly System.Diagnostics.Stopwatch _aiStopwatch = new();
+        private int _aiCompleted;
+        private int _aiTotal;
+
         // ------------------------------------------------------------------ voice catalog (dynamic)
         private static readonly List<(string Name, string Display, VoiceGender Gender)> AzureVoices = new()
         {
@@ -62,6 +69,109 @@ namespace ManusReader
 
             LoadSettings();
             ApplySettings();
+
+            _aiTimer.Tick += (_, _) => RefreshAiProgressText();
+        }
+
+        // ================================================================== AI progress overlay
+        private void ShowAiProgress()
+        {
+            _aiCompleted = 0;
+            _aiTotal = 0;
+            _aiStopwatch.Restart();
+            AiProgressBar.IsIndeterminate = true;
+            AiProgressBar.Value = 0;
+            AiProgressStep.Text = "Förbereder analys…";
+            AiProgressPercent.Text = "";
+            AiProgressEta.Text = "";
+            AiProgressElapsed.Text = "";
+            AiProgressOverlay.Visibility = Visibility.Visible;
+            MainContentGrid.IsEnabled = false;
+            _aiTimer.Start();
+        }
+
+        private void SetAiProgress(int completed, int total)
+        {
+            _aiCompleted = completed;
+            _aiTotal = total;
+            if (total > 0)
+            {
+                AiProgressBar.IsIndeterminate = false;
+                AiProgressBar.Maximum = total;
+                AiProgressBar.Value = completed;
+            }
+            RefreshAiProgressText();
+        }
+
+        private void HideAiProgress()
+        {
+            _aiTimer.Stop();
+            _aiStopwatch.Stop();
+            AiProgressOverlay.Visibility = Visibility.Collapsed;
+            MainContentGrid.IsEnabled = true;
+        }
+
+        private void RefreshAiProgressText()
+        {
+            var elapsed = _aiStopwatch.Elapsed;
+            AiProgressElapsed.Text = $"Förfluten tid: {FormatDuration(elapsed)}";
+
+            if (_aiTotal <= 0) return;
+
+            var pct = (double)_aiCompleted / _aiTotal * 100;
+            AiProgressPercent.Text = $"{pct:F0}%";
+            AiProgressStep.Text =
+                $"Analyserar del {Math.Min(_aiCompleted + 1, _aiTotal)} av {_aiTotal}…";
+
+            if (_aiCompleted > 0)
+            {
+                var perChunk = elapsed.TotalSeconds / _aiCompleted;
+                var remaining = TimeSpan.FromSeconds(perChunk * (_aiTotal - _aiCompleted));
+                AiProgressEta.Text = remaining.TotalSeconds < 1
+                    ? "Klar strax…"
+                    : $"Cirka {FormatDuration(remaining)} kvar";
+            }
+            else
+            {
+                AiProgressEta.Text = "Beräknar tid kvar…";
+            }
+        }
+
+        private static string FormatDuration(TimeSpan t) =>
+            t.TotalHours >= 1
+                ? $"{(int)t.TotalHours}:{t.Minutes:D2}:{t.Seconds:D2}"
+                : $"{t.Minutes}:{t.Seconds:D2}";
+
+        // Shows a popup summarising how the AI import went, including any problems.
+        private void ShowImportSummary(string fileName, OllamaScriptParser.ParseStats s)
+        {
+            var problems = s.FailedChunks > 0 || s.UnknownLines > 0;
+
+            var msg =
+                $"Manus: {fileName}\n" +
+                $"AI-modell: {_ollamaParser.Model}\n" +
+                $"\n" +
+                $"• Repliker/rader inlästa: {s.ParsedLines}\n" +
+                $"• Roller identifierade: {s.Roles}\n" +
+                $"• Textstycken analyserade: {s.Chunks}\n";
+
+            if (s.UnknownLines > 0)
+                msg += $"• Okända rader (orange, behöver roll): {s.UnknownLines}\n";
+
+            if (s.FailedChunks > 0)
+                msg +=
+                    $"\n⚠ {s.FailedChunks} stycke(n) kunde AI:n inte tolka och räddades\n" +
+                    $"   med regelbaserad tolkning ({s.SalvagedLines} rader).\n" +
+                    $"   Dessa kan behöva ses över.\n";
+
+            msg += "\nTips: ser resultatet fel ut kan \"Öppna Word-manus\" " +
+                   "(utan AI) ge ett stabilare resultat.";
+
+            MessageBox.Show(
+                msg,
+                problems ? "Import klar – med anmärkningar" : "Import klar",
+                MessageBoxButton.OK,
+                problems ? MessageBoxImage.Warning : MessageBoxImage.Information);
         }
 
         // ================================================================== settings
@@ -162,30 +272,17 @@ namespace ManusReader
         {
             try
             {
-                var (lines, roles) = ScriptParser.Parse(filePath);
+                var (lines, _) = ScriptParser.Parse(filePath);
                 _currentScriptPath = filePath;
                 _currentLineIndex = -1;
 
                 _scriptLines.Clear();
                 foreach (var l in lines) _scriptLines.Add(l);
 
-                // Add profiles for new roles only
-                var existing = new HashSet<string>(
-                    _voiceProfiles.Select(p => p.RoleName),
-                    StringComparer.OrdinalIgnoreCase);
-
-                foreach (var role in roles.Where(r => !existing.Contains(r)))
-                    _voiceProfiles.Add(CreateDefaultProfile(role, _voiceProfiles.Count));
-
-                // Remove profiles no longer in script
-                var inScript = new HashSet<string>(roles, StringComparer.OrdinalIgnoreCase);
-                var toRemove = _voiceProfiles
-                    .Where(p => !inScript.Contains(p.RoleName))
-                    .ToList();
-                foreach (var p in toRemove) _voiceProfiles.Remove(p);
+                SyncVoiceProfiles();
 
                 Title = $"ManusReader – {Path.GetFileName(filePath)}";
-                SetStatus($"Manus öppnat: {lines.Count} repliker, {roles.Count} roller");
+                SetStatus($"Manus öppnat: {lines.Count} repliker, {_voiceProfiles.Count} roller");
                 UpdateProgress();
             }
             catch (Exception ex)
@@ -195,10 +292,42 @@ namespace ManusReader
             }
         }
 
+        // Ensures every unique, non-direction role in script lines has a voice profile,
+        // and removes profiles for roles that are no longer used.
+        private void SyncVoiceProfiles()
+        {
+            var rolesInScript = _scriptLines
+                .Where(l => !string.IsNullOrWhiteSpace(l.RoleName)
+                         && !l.IsStageDirection
+                         && !l.IsUnknown)
+                .Select(l => l.RoleName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var existing = new HashSet<string>(
+                _voiceProfiles.Select(p => p.RoleName), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var role in rolesInScript.Where(r => !existing.Contains(r)))
+                _voiceProfiles.Add(CreateDefaultProfile(role, _voiceProfiles.Count));
+
+            var inScript = new HashSet<string>(rolesInScript, StringComparer.OrdinalIgnoreCase);
+            var toRemove = _voiceProfiles.Where(p => !inScript.Contains(p.RoleName)).ToList();
+            foreach (var p in toRemove) _voiceProfiles.Remove(p);
+        }
+
         private VoiceProfile CreateDefaultProfile(string roleName, int index)
         {
-            var gender = index % 2 == 0 ? VoiceGender.Man : VoiceGender.Kvinna;
-            var voice = _voices.FirstOrDefault(v => v.Gender == gender);
+            // Guess gender from the role name; fall back to alternating if unknown.
+            var gender = NameGender.Guess(roleName)
+                         ?? (index % 2 == 0 ? VoiceGender.Man : VoiceGender.Kvinna);
+
+            // Pick a voice of that gender, cycling so different roles of the same
+            // gender don't all share the first matching voice.
+            var sameGender = _voices.Where(v => v.Gender == gender).ToList();
+            var voice = sameGender.Count > 0
+                ? sameGender[index % sameGender.Count]
+                : _voices.FirstOrDefault();
+
             var profile = new VoiceProfile { RoleName = roleName, Gender = gender };
 
             if (_settings.Provider == TtsProvider.Natural)
@@ -247,17 +376,10 @@ namespace ManusReader
                 _scriptLines.Clear();
                 foreach (var l in lines) _scriptLines.Add(l);
 
-                var existing = new HashSet<string>(
-                    _voiceProfiles.Select(p => p.RoleName), StringComparer.OrdinalIgnoreCase);
-                foreach (var role in roles.Where(r => !existing.Contains(r)))
-                    _voiceProfiles.Add(CreateDefaultProfile(role, _voiceProfiles.Count));
-
-                var inScript = new HashSet<string>(roles, StringComparer.OrdinalIgnoreCase);
-                var toRemove = _voiceProfiles.Where(p => !inScript.Contains(p.RoleName)).ToList();
-                foreach (var p in toRemove) _voiceProfiles.Remove(p);
+                SyncVoiceProfiles();
 
                 Title = $"ManusReader – {Path.GetFileName(dlg.FileName)}";
-                SetStatus($"Klar! {lines.Count} repliker, {roles.Count} roller inlästa.");
+                SetStatus($"Klar! {lines.Count} repliker, {_voiceProfiles.Count} roller inlästa.");
                 UpdateProgress();
             }
             catch (Exception ex)
@@ -328,40 +450,38 @@ namespace ManusReader
                 return;
             }
 
-            // Disable UI during parsing
-            IsEnabled = false;
+            // Show progress overlay during parsing
+            ShowAiProgress();
             try
             {
-                var progress = new Progress<string>(msg => Dispatcher.Invoke(() => SetStatus(msg)));
-                var (lines, roles) = await _ollamaParser.ParseAsync(rawText, progress);
+                var progress = new Progress<OllamaScriptParser.ParseProgress>(p =>
+                    Dispatcher.Invoke(() =>
+                    {
+                        SetAiProgress(p.Completed, p.Total);
+                        SetStatus($"AI analyserar: del {Math.Min(p.Completed + 1, p.Total)} av {p.Total}…");
+                    }));
+                var result = await _ollamaParser.ParseAsync(rawText, progress);
+                var lines = result.Lines;
 
                 _currentScriptPath = dlg.FileName;
                 _currentLineIndex = -1;
                 _scriptLines.Clear();
                 foreach (var l in lines) _scriptLines.Add(l);
 
-                var existing = new HashSet<string>(
-                    _voiceProfiles.Select(p => p.RoleName), StringComparer.OrdinalIgnoreCase);
-
-                foreach (var role in roles.Where(r => r != "unknown" && !existing.Contains(r)))
-                    _voiceProfiles.Add(CreateDefaultProfile(role, _voiceProfiles.Count));
-
-                var inScript = new HashSet<string>(
-                    roles.Where(r => r != "unknown"), StringComparer.OrdinalIgnoreCase);
-                var toRemove = _voiceProfiles
-                    .Where(p => !inScript.Contains(p.RoleName)).ToList();
-                foreach (var p in toRemove) _voiceProfiles.Remove(p);
+                SyncVoiceProfiles();
 
                 Title = $"ManusReader – {Path.GetFileName(dlg.FileName)} (AI)";
 
                 var unknownCount = lines.Count(l => l.IsUnknown);
                 if (unknownCount > 0)
-                    SetStatus($"Klar! {lines.Count} rader, {roles.Count} roller. " +
+                    SetStatus($"Klar! {lines.Count} rader, {_voiceProfiles.Count} roller. " +
                               $"{unknownCount} okända rader (orange) – högerklicka för att tilldela roll.");
                 else
-                    SetStatus($"Klar! {lines.Count} repliker, {roles.Count} roller inlästa.");
+                    SetStatus($"Klar! {lines.Count} repliker, {_voiceProfiles.Count} roller inlästa.");
 
                 UpdateProgress();
+                HideAiProgress();
+                ShowImportSummary(Path.GetFileName(dlg.FileName), result.Stats);
             }
             catch (Exception ex)
             {
@@ -371,7 +491,7 @@ namespace ManusReader
             }
             finally
             {
-                IsEnabled = true;
+                HideAiProgress();
             }
         }
 
@@ -390,15 +510,11 @@ namespace ManusReader
 
             var newRole = dialog.SelectedRole.Trim().ToUpper();
 
-            // Update all lines with the same original unknown text belonging to this selection
             line.RoleName = newRole;
             line.IsUnknown = false;
             line.ShouldRead = true;
 
-            // Add voice profile if new role
-            if (!_voiceProfiles.Any(p =>
-                    string.Equals(p.RoleName, newRole, StringComparison.OrdinalIgnoreCase)))
-                _voiceProfiles.Add(CreateDefaultProfile(newRole, _voiceProfiles.Count));
+            SyncVoiceProfiles();
 
             var remaining = _scriptLines.Count(l => l.IsUnknown);
             SetStatus(remaining > 0
@@ -406,12 +522,50 @@ namespace ManusReader
                 : "Alla rader har nu en roll tilldelad.");
         }
 
+        private void RenameRoleFromGrid_Click(object sender, RoutedEventArgs e)
+        {
+            if (ScriptDataGrid.SelectedItem is not ScriptLine line) return;
+            var oldName = line.RoleName;
+            if (string.IsNullOrWhiteSpace(oldName)) return;
+
+            var newName = ShowRenameDialog(oldName);
+            if (newName == null || newName == oldName) return;
+
+            // Update all lines that share the old role name
+            foreach (var l in _scriptLines.Where(l =>
+                string.Equals(l.RoleName, oldName, StringComparison.OrdinalIgnoreCase)))
+            {
+                l.RoleName = newName;
+                l.IsUnknown = false;
+            }
+
+            // Rename or merge voice profile
+            var oldProfile = _voiceProfiles.FirstOrDefault(p =>
+                string.Equals(p.RoleName, oldName, StringComparison.OrdinalIgnoreCase));
+            var newProfile = _voiceProfiles.FirstOrDefault(p =>
+                string.Equals(p.RoleName, newName, StringComparison.OrdinalIgnoreCase));
+
+            if (oldProfile != null)
+            {
+                if (newProfile == null)
+                    oldProfile.RoleName = newName;
+                else
+                    _voiceProfiles.Remove(oldProfile);
+            }
+
+            SyncVoiceProfiles();
+            SetStatus($"Roll omdöpt: {oldName} → {newName}");
+        }
+
         private void OpenProject_Click(object sender, RoutedEventArgs e)
         {
             var dlg = new OpenFileDialog
             {
                 Filter = "ManusReader Projekt (*.mrp)|*.mrp|Alla filer (*.*)|*.*",
-                Title = "Öppna projekt"
+                Title = "Öppna projekt",
+                InitialDirectory = _currentProjectPath != null
+                    ? Path.GetDirectoryName(_currentProjectPath)
+                    : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
             };
             if (dlg.ShowDialog() == true) LoadProject(dlg.FileName);
         }
@@ -478,7 +632,10 @@ namespace ManusReader
             var dlg = new SaveFileDialog
             {
                 Filter = "ManusReader Projekt (*.mrp)|*.mrp",
-                Title = "Spara projekt som"
+                Title = "Spara projekt som",
+                InitialDirectory = _currentProjectPath != null
+                    ? Path.GetDirectoryName(_currentProjectPath)
+                    : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
             };
             if (dlg.ShowDialog() == true)
             {
@@ -565,6 +722,13 @@ namespace ManusReader
             var oldName = _selectedProfile.RoleName;
             var newName = ShowRenameDialog(oldName);
             if (newName == null || newName == oldName) return;
+
+            // If new name already exists, merge by removing the old profile
+            var conflicting = _voiceProfiles.FirstOrDefault(p =>
+                string.Equals(p.RoleName, newName, StringComparison.OrdinalIgnoreCase)
+                && p != _selectedProfile);
+            if (conflicting != null)
+                _voiceProfiles.Remove(conflicting);
 
             _selectedProfile.RoleName = newName;
 
@@ -736,7 +900,40 @@ namespace ManusReader
         }
 
         // ================================================================== context menu
-        private void ScriptDataGrid_ContextMenuOpening(object sender, ContextMenuEventArgs e) { }
+        private void ScriptDataGrid_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+        {
+            var line = ScriptDataGrid.SelectedItem as ScriptLine;
+            RenameRoleMenuItem.IsEnabled = line != null && !line.IsStageDirection;
+            DeleteLineMenuItem.IsEnabled = line != null;
+        }
+
+        private void DeleteLine_Click(object sender, RoutedEventArgs e)
+        {
+            if (ScriptDataGrid.SelectedItem is not ScriptLine line) return;
+
+            var result = MessageBox.Show(
+                $"Radera repliken?\n\n\"{(line.Text.Length > 80 ? line.Text[..80] + "…" : line.Text)}\"\n\n" +
+                "OBS! Det går inte att ångra detta.",
+                "Radera replik", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+
+            if (result != MessageBoxResult.OK) return;
+
+            // If this was the current line, clear the highlight
+            if (_currentLineIndex == _scriptLines.IndexOf(line))
+            {
+                line.IsCurrent = false;
+                _currentLineIndex--;
+            }
+            else if (_scriptLines.IndexOf(line) < _currentLineIndex)
+            {
+                _currentLineIndex--;
+            }
+
+            _scriptLines.Remove(line);
+            SyncVoiceProfiles();
+            UpdateProgress();
+            SetStatus("Replik raderad.");
+        }
 
         private void StartFromHere_Click(object sender, RoutedEventArgs e)
         {
@@ -782,6 +979,19 @@ namespace ManusReader
                 return;
             }
             if (!EnsureTtsConfigured()) return;
+
+            // If the user has selected a row, start from there instead of resuming
+            // from the last played position.
+            if (ScriptDataGrid.SelectedItem is ScriptLine selected)
+            {
+                var idx = _scriptLines.IndexOf(selected);
+                if (idx >= 0)
+                {
+                    if (_currentLineIndex >= 0 && _currentLineIndex < _scriptLines.Count)
+                        _scriptLines[_currentLineIndex].IsCurrent = false;
+                    _currentLineIndex = idx - 1;
+                }
+            }
 
             _isPlaying = true;
             UpdateStartStopButton();

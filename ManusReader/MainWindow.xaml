@@ -96,8 +96,9 @@
             </StatusBarItem>
         </StatusBar>
 
-        <!-- ===== HUVUD-GRID ===== -->
+        <!-- ===== HUVUD-GRID (med overlay-lager) ===== -->
         <Grid>
+        <Grid x:Name="MainContentGrid">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="310" MinWidth="220"/>
                 <ColumnDefinition Width="5"/>
@@ -235,9 +236,12 @@
                             <MenuItem Header="▶ Börja läsa härifrån" Click="StartFromHere_Click"/>
                             <Separator/>
                             <MenuItem Header="🏷 Tilldela roll till markerad rad..." Click="AssignRole_Click"/>
+                            <MenuItem x:Name="RenameRoleMenuItem" Header="✏ Byt namn på roll..." Click="RenameRoleFromGrid_Click"/>
                             <Separator/>
                             <MenuItem Header="Markera replik som ska läsas" Click="MarkShouldRead_Click"/>
                             <MenuItem Header="Avmarkera replik" Click="MarkShouldNotRead_Click"/>
+                            <Separator/>
+                            <MenuItem x:Name="DeleteLineMenuItem" Header="🗑 Radera replik..." Click="DeleteLine_Click"/>
                         </ContextMenu>
                     </DataGrid.ContextMenu>
 
@@ -263,16 +267,22 @@
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
 
-                        <DataGridTextColumn Header="Replik" Binding="{Binding Text}"
-                                            Width="*" IsReadOnly="True">
-                            <DataGridTextColumn.ElementStyle>
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="TextWrapping" Value="Wrap"/>
-                                    <Setter Property="VerticalAlignment" Value="Center"/>
-                                    <Setter Property="Padding" Value="2,3"/>
-                                </Style>
-                            </DataGridTextColumn.ElementStyle>
-                        </DataGridTextColumn>
+                        <DataGridTemplateColumn Header="Replik" Width="*" CanUserSort="False">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Text}" TextWrapping="Wrap"
+                                               VerticalAlignment="Center" Padding="2,3"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                            <DataGridTemplateColumn.CellEditingTemplate>
+                                <DataTemplate>
+                                    <TextBox Text="{Binding Text, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             TextWrapping="Wrap" AcceptsReturn="False"
+                                             VerticalAlignment="Stretch" Padding="2,3"
+                                             BorderThickness="0"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellEditingTemplate>
+                        </DataGridTemplateColumn>
                     </DataGrid.Columns>
 
                     <DataGrid.RowStyle>
@@ -301,6 +311,48 @@
                     </DataGrid.RowStyle>
                 </DataGrid>
             </DockPanel>
+        </Grid>
+
+            <!-- ==================== AI-ANALYS OVERLAY ==================== -->
+            <Border x:Name="AiProgressOverlay" Visibility="Collapsed"
+                    Background="#A6000000" Panel.ZIndex="100">
+                <Border Background="White" CornerRadius="10" Padding="30"
+                        Width="460" VerticalAlignment="Center" HorizontalAlignment="Center"
+                        BorderBrush="#DDD" BorderThickness="1">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="20" ShadowDepth="0" Opacity="0.3"/>
+                    </Border.Effect>
+                    <StackPanel>
+                        <TextBlock Text="🤖 Analyserar manus med AI"
+                                   FontSize="17" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center"/>
+                        <TextBlock x:Name="AiProgressStep" Text="Förbereder analys…"
+                                   FontSize="12" Foreground="#555"
+                                   HorizontalAlignment="Center" Margin="0,12,0,0"/>
+
+                        <ProgressBar x:Name="AiProgressBar" Height="26"
+                                     Minimum="0" Maximum="1" Value="0"
+                                     IsIndeterminate="True" Margin="0,14,0,0"/>
+
+                        <Grid Margin="0,10,0,0">
+                            <TextBlock x:Name="AiProgressPercent" Text=""
+                                       FontSize="13" FontWeight="SemiBold"
+                                       HorizontalAlignment="Left"/>
+                            <TextBlock x:Name="AiProgressEta" Text=""
+                                       FontSize="13" Foreground="#333"
+                                       HorizontalAlignment="Right"/>
+                        </Grid>
+
+                        <TextBlock x:Name="AiProgressElapsed" Text=""
+                                   FontSize="11" Foreground="#888"
+                                   HorizontalAlignment="Center" Margin="0,8,0,0"/>
+
+                        <TextBlock Text="Stora manus kan ta flera minuter. Fönstret svarar igen när analysen är klar."
+                                   FontSize="10" Foreground="#AAA" TextWrapping="Wrap"
+                                   TextAlignment="Center" Margin="0,14,0,0"/>
+                    </StackPanel>
+                </Border>
+            </Border>
         </Grid>
     </DockPanel>
 </Window>
