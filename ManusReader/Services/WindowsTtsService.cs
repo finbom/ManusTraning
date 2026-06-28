@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security;
 using System.Threading.Tasks;
 using ManusReader.Models;
 using SpeechSynth = System.Speech.Synthesis.SpeechSynthesizer;
@@ -51,20 +52,32 @@ public class WindowsTtsService : ITtsService
 
         _synth = new SpeechSynth();
 
-        var voiceName = profile.NaturalVoiceName;
-        if (!string.IsNullOrEmpty(voiceName))
+        if (!string.IsNullOrEmpty(profile.NaturalVoiceName))
         {
-            try { _synth.SelectVoice(voiceName); }
+            try { _synth.SelectVoice(profile.NaturalVoiceName); }
             catch { /* fall back to default voice */ }
         }
 
-        // Rate: map -50..+50 range to SAPI -10..+10
+        // Rate via SAPI property (-10..+10); SSML prosody rate would override this,
+        // so we omit rate from SSML and let the property control it.
         _synth.Rate = (int)Math.Clamp(profile.Rate / 5.0, -10, 10);
         _synth.Volume = 100;
 
+        // Pitch via SSML semitones (-50..+50 → -10..+10 st).
+        // xml:lang="sv-SE" tells the engine to apply Swedish pronunciation rules.
+        var pitchSt = (int)Math.Clamp(profile.Pitch / 5.0, -10, 10);
+        var pitchStr = pitchSt >= 0 ? $"+{pitchSt}st" : $"{pitchSt}st";
+        var escaped = SecurityElement.Escape(text);
+
+        var ssml = $"""
+            <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="sv-SE">
+              <prosody pitch="{pitchStr}">{escaped}</prosody>
+            </speak>
+            """;
+
         _tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _synth.SpeakCompleted += (_, _) => _tcs?.TrySetResult(true);
-        _synth.SpeakAsync(text);
+        _synth.SpeakSsmlAsync(ssml);
 
         return _tcs.Task;
     }
