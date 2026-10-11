@@ -29,15 +29,15 @@ public static class Piper
         "https://huggingface.co/rhasspy/piper-voices/resolve/main/";
 
     // A voice comes either from rhasspy/piper-voices on Hugging Face (HfPath →
-    // .onnx + .onnx.json) or as a .tar.gz release (TarUrl). Some archives lack the
-    // .onnx.json; then ConfigFrom names a compatible config to download instead.
+    // .onnx + .onnx.json) or as a .tar.gz release (TarUrl) holding both files.
     public record CatalogVoice(
         string Id, string Display, VoiceGender Gender, string License, string Credit,
-        string? HfPath = null, string? TarUrl = null, string? ConfigFrom = null, int Speakers = 1);
+        string? HfPath = null, string? TarUrl = null);
 
     private const string YeagerReleases = "https://github.com/yeager/piper-voices-sv/releases/download/";
 
-    // Swedish voices. Alma, Axel and Daniel are by Daniel Nylander (yeager).
+    // Swedish voices. Alma and Axel are by Daniel Nylander (yeager). His "Daniel"
+    // voice is left out: its archive has no config and it sounds robotic.
     public static readonly IReadOnlyList<CatalogVoice> Catalog = new List<CatalogVoice>
     {
         new("sv_SE-alma-medium",   "Alma – Kvinna (SV, Piper)",   VoiceGender.Kvinna, "CC BY 4.0", "Daniel Nylander",
@@ -46,12 +46,23 @@ public static class Piper
             HfPath: "sv/sv_SE/lisa/medium/"),
         new("sv_SE-axel-medium",   "Axel – Man (SV, Piper)",      VoiceGender.Man,    "CC BY 4.0", "Daniel Nylander",
             TarUrl: YeagerReleases + "v1.2.0/sv_SE-axel-medium.tar.gz"),
-        new("sv_SE-daniel-medium", "Daniel – Man (SV, Piper)",    VoiceGender.Man,    "CC BY 4.0", "Daniel Nylander",
-            TarUrl: YeagerReleases + "v1.1.0/sv_SE-daniel-medium.tar.gz",
-            ConfigFrom: "sv/sv_SE/nst/medium/sv_SE-nst-medium.onnx.json", Speakers: 16),
         new("sv_SE-nst-medium",    "NST – Man, mörk (SV, Piper)", VoiceGender.Man,    "CC0", "KBLab / Kungliga biblioteket",
             HfPath: "sv/sv_SE/nst/medium/"),
     };
+
+    // A woman and a man – enough to cast a whole script (children are made from
+    // the female voice). Offered as a one-click starter set.
+    public static readonly IReadOnlyList<string> Recommended = new[] { "sv_SE-alma-medium", "sv_SE-axel-medium" };
+
+    // Which voice genders lack an installed voice ("kvinnoröst", "mansröst").
+    public static List<string> MissingGenders()
+    {
+        var installed = InstalledVoices();
+        var missing = new List<string>();
+        if (!installed.Any(v => v.Gender == VoiceGender.Kvinna)) missing.Add("kvinnoröst");
+        if (!installed.Any(v => v.Gender == VoiceGender.Man)) missing.Add("mansröst");
+        return missing;
+    }
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(30) };
 
@@ -128,24 +139,8 @@ public static class Piper
 
             if (onnxTmp == null)
                 throw new Exception("Röstpaketet innehöll ingen modell (.onnx).");
-
             if (jsonTmp == null)
-            {
-                if (voice.ConfigFrom == null)
-                    throw new Exception("Röstpaketet saknar konfiguration (.onnx.json).");
-
-                jsonTmp = model + ".json.part";
-                await DownloadFileAsync(VoiceBaseUrl + voice.ConfigFrom, jsonTmp, voice.Display, null, ct);
-            }
-
-            if (voice.Speakers > 1)
-            {
-                var cfg = JObject.Parse(File.ReadAllText(jsonTmp));
-                cfg["num_speakers"] = voice.Speakers;
-                cfg["speaker_id_map"] = new JObject(
-                    Enumerable.Range(0, voice.Speakers).Select(i => new JProperty(i.ToString(), i)));
-                File.WriteAllText(jsonTmp, cfg.ToString());
-            }
+                throw new Exception("Röstpaketet saknar konfiguration (.onnx.json).");
 
             File.Move(jsonTmp, model + ".json", overwrite: true);
             File.Move(onnxTmp, model, overwrite: true);

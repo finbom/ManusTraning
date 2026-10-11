@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Navigation;
 using ManusReader.Models;
@@ -116,6 +118,17 @@ public partial class TtsSettingsDialog : Window
             return;
         }
 
+        // Without a female (or male) voice those roles would silently get the
+        // other gender's voice.
+        if (RadioPiper.IsChecked == true && Piper.MissingGenders() is { Count: > 0 } missing)
+        {
+            var answer = MessageBox.Show(
+                $"Ingen {string.Join(" eller ", missing)} är nedladdad för Piper, så de rollerna " +
+                "får en röst av fel kön.\n\nVill du ändå fortsätta? (Välj Nej för att ladda ner fler röster.)",
+                "Piper", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (answer != MessageBoxResult.Yes) return;
+        }
+
         Result.Provider = RadioPiper.IsChecked == true ? TtsProvider.Piper
                         : RadioAzure.IsChecked == true ? TtsProvider.Azure
                         : TtsProvider.Natural;
@@ -194,7 +207,9 @@ public partial class TtsSettingsDialog : Window
             ? "Piper är inte nedladdat. Välj en röst och klicka på Ladda ner."
             : Piper.InstalledVoices().Count == 0
                 ? "Piper är nedladdat. Ladda ner minst en röst."
-                : "Piper är redo.";
+                : Piper.MissingGenders() is { Count: > 0 } missing
+                    ? $"Piper är redo, men ingen {string.Join(" eller ", missing)} är nedladdad."
+                    : "Piper är redo.";
 
         UpdatePiperButtons();
     }
@@ -209,6 +224,8 @@ public partial class TtsSettingsDialog : Window
         var installed = voice != null && Piper.IsVoiceInstalled(voice.Id);
 
         PiperDownloadButton.IsEnabled = !busy && voice != null && (!installed || !Piper.IsEngineInstalled);
+        PiperRecommendedButton.IsEnabled = !busy &&
+            (!Piper.IsEngineInstalled || Piper.Recommended.Any(id => !Piper.IsVoiceInstalled(id)));
         PiperTestButton.IsEnabled = !busy && installed && Piper.IsEngineInstalled;
         PiperRemoveButton.IsEnabled = !busy && installed;
         PiperVoicesList.IsEnabled = !busy;
@@ -217,8 +234,15 @@ public partial class TtsSettingsDialog : Window
     private async void PiperDownload_Click(object sender, RoutedEventArgs e)
     {
         var voice = SelectedPiperVoice;
-        if (voice == null) return;
+        if (voice != null) await DownloadPiperAsync(new[] { voice });
+    }
 
+    private async void PiperRecommended_Click(object sender, RoutedEventArgs e) =>
+        await DownloadPiperAsync(Piper.Catalog.Where(v => Piper.Recommended.Contains(v.Id)).ToList());
+
+    // Downloads the engine (if needed) and the given voices that aren't installed.
+    private async Task DownloadPiperAsync(IReadOnlyList<Piper.CatalogVoice> voices)
+    {
         _downloadCts = new CancellationTokenSource();
         var ct = _downloadCts.Token;
         PiperProgress.Visibility = Visibility.Visible;
@@ -244,7 +268,7 @@ public partial class TtsSettingsDialog : Window
         {
             if (!Piper.IsEngineInstalled)
                 await Piper.InstallEngineAsync(progress, ct);
-            if (!Piper.IsVoiceInstalled(voice.Id))
+            foreach (var voice in voices.Where(v => !Piper.IsVoiceInstalled(v.Id)))
                 await Piper.InstallVoiceAsync(voice, progress, ct);
         }
         catch (OperationCanceledException) { return; }

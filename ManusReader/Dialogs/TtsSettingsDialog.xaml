@@ -77,7 +77,11 @@
                              BorderBrush="#DDD" SelectionMode="Single"
                              SelectionChanged="PiperVoicesList_SelectionChanged"/>
                     <WrapPanel Margin="0,8,0,0">
-                        <Button x:Name="PiperDownloadButton" Content="⬇  Ladda ner"
+                        <Button x:Name="PiperRecommendedButton" Content="⬇  Ladda ner rekommenderade (Alma + Axel)"
+                                Padding="8,4" FontSize="11" Margin="0,0,8,4" FontWeight="SemiBold"
+                                Click="PiperRecommended_Click"
+                                ToolTip="En kvinnoröst och en mansröst – räcker för alla roller (barnröster görs av kvinnorösten)"/>
+                        <Button x:Name="PiperDownloadButton" Content="⬇  Ladda ner vald"
                                 Padding="8,4" FontSize="11" Margin="0,0,8,4"
                                 Click="PiperDownload_Click"/>
                         <Button x:Name="PiperTestButton" Content="🔊  Testa"

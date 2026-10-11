@@ -69,17 +69,18 @@ Under **Inställningar → TTS-inställningar** (Ctrl+T) väljer du vilken talsy
 [Piper](https://github.com/rhasspy/piper) är en fri talsyntes som körs helt på din egen dator. Den låter betydligt mer naturlig än Windows-rösterna och kostar ingenting.
 
 1. Öppna **TTS-inställningar** och välj **Piper**.
-2. Markera en röst och klicka på **Ladda ner**. Första gången hämtas även själva Piper (ca 20 MB). Varje röst är ca 60 MB.
+2. Klicka på **Ladda ner rekommenderade (Alma + Axel)**. Då får du en kvinnoröst och en mansröst, vilket räcker för alla roller, eftersom barnrösterna görs av kvinnorösten. Första gången hämtas även själva Piper (ca 20 MB). Varje röst är ca 60 MB.
 3. Klicka på **Testa** och sedan **OK**.
 
-Det finns fem svenska röster att välja mellan. Några av dem kan du [lyssna på här](https://rhasspy.github.io/piper-samples/) innan du laddar ner.
+Vill du ha fler röster markerar du en och klickar på **Ladda ner vald**. Saknas det en kvinno- eller mansröst varnar programmet, så att inga roller får en röst av fel kön utan att du vet om det.
+
+Det finns fyra svenska röster att välja mellan. Några av dem kan du [lyssna på här](https://rhasspy.github.io/piper-samples/) innan du laddar ner.
 
 | Röst | Typ | Skapad av | Licens |
 |---|---|---|---|
 | Alma | Kvinna | [Daniel Nylander](https://github.com/yeager/piper-voices-sv) | CC BY 4.0 |
 | Lisa | Kvinna | [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) | Ej angiven |
 | Axel | Man | [Daniel Nylander](https://github.com/yeager/piper-voices-sv) | CC BY 4.0 |
-| Daniel | Man | [Daniel Nylander](https://github.com/yeager/piper-voices-sv) | CC BY 4.0 |
 | NST | Man, mörk | KBLab / Kungliga biblioteket | CC0 |
 
 Piper och rösterna laddas ner från sina officiella källor (GitHub och Hugging Face) till `%LOCALAPPDATA%\ManusReader\piper`. De ingår alltså inte i ManusReader.exe. Piper själv har MIT-licens och använder espeak-ng (GPL-3.0) för uttal.

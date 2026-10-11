@@ -64,6 +64,7 @@ namespace ManusReader
         private List<(string Name, string Display, VoiceGender Gender)> _voices = new();
         // The subset of _voices currently listed in VoiceComboBox (filtered by character).
         private List<(string Name, string Display, VoiceGender Gender)> _shownVoices = new();
+        private HashSet<string> _lastVoiceNames = new();
 
         // ================================================================== constructor
         public MainWindow()
@@ -272,12 +273,19 @@ namespace ManusReader
             };
 
             // Roles created under another engine may lack a voice for this one –
-            // give them one that fits the character.
+            // give them one that fits the character. When new voices became
+            // available (e.g. a female Piper voice was downloaded), also move roles
+            // that had to make do with a non-fitting voice onto a fitting one.
+            var voicesChanged = !_voices.Select(v => v.Name).ToHashSet().SetEquals(_lastVoiceNames);
+            _lastVoiceNames = _voices.Select(v => v.Name).ToHashSet();
             if (_voices.Count > 0)
             {
                 foreach (var p in _voiceProfiles)
                 {
-                    if (_voices.Any(v => v.Name == ActiveVoiceName(p))) continue;
+                    var fitting = VoicesFor(p.Character);
+                    var hasVoice = _voices.Any(v => v.Name == ActiveVoiceName(p));
+                    var misfit = voicesChanged && fitting.Count > 0 && !fitting.Any(v => v.Name == ActiveVoiceName(p));
+                    if (hasVoice && !misfit) continue;
                     SetActiveVoiceName(p, PreferredVoices(p.Character).FirstOrDefault().Name ?? _voices[0].Name);
                 }
             }
@@ -325,6 +333,20 @@ namespace ManusReader
             if (_selectedProfile == null) return;
 
             var active = ActiveVoiceName(_selectedProfile);
+
+            // Tell the user when no installed voice fits (e.g. Piper without a
+            // female voice) instead of silently using the other gender.
+            var fitsNone = _voices.Count > 0 && VoicesFor(_selectedProfile.Character).Count == 0;
+            NoFittingVoiceText.Visibility = fitsNone ? Visibility.Visible : Visibility.Collapsed;
+            if (fitsNone)
+            {
+                var kind = Characters.Get(_selectedProfile.Character).VoiceGender == VoiceGender.Kvinna
+                    ? "kvinnoröst" : "mansröst";
+                NoFittingVoiceText.Text = _settings.Provider == TtsProvider.Piper
+                    ? $"⚠ Ingen {kind} är nedladdad. Ladda ner en i TTS-inställningar (Ctrl+T)."
+                    : $"⚠ Ingen {kind} är installerad för den här röstmotorn.";
+            }
+
             _shownVoices = ShowAllVoicesCheck.IsChecked == true
                 ? _voices.OrderBy(v => IsSwedishVoice(v) ? 0 : 1).ToList()
                 : PreferredVoices(_selectedProfile.Character);
