@@ -2,7 +2,7 @@ using Newtonsoft.Json;
 
 namespace ManusReader.Models;
 
-public enum TtsProvider { Natural, Azure }
+public enum TtsProvider { Natural, Azure, Piper }
 
 public class AppSettings
 {

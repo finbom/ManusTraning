@@ -155,19 +155,29 @@
                                     ToolTip="Byt namn på rollen – uppdaterar alla repliker i manuset"/>
                         </Grid>
 
-                        <TextBlock Style="{StaticResource LabelStyle}" Text="Röst:"/>
-                        <ComboBox x:Name="VoiceComboBox" Margin="0,0,0,6"
-                                  SelectionChanged="VoiceComboBox_SelectionChanged"/>
+                        <TextBlock Style="{StaticResource LabelStyle}" Text="Karaktär:"/>
+                        <ComboBox x:Name="CharacterComboBox" Margin="0,0,0,6"
+                                  SelectionChanged="CharacterComboBox_SelectionChanged"
+                                  ToolTip="Väljer passande röster och sätter tempo och pitch – finjustera sedan med reglagen"/>
 
-                        <TextBlock Style="{StaticResource LabelStyle}" Text="Kön / Karaktär:"/>
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                            <RadioButton x:Name="GenderMan" Content="Man" GroupName="Gender"
-                                         Margin="0,0,12,0" Checked="Gender_Checked"/>
-                            <RadioButton x:Name="GenderKvinna" Content="Kvinna" GroupName="Gender"
-                                         Margin="0,0,12,0" Checked="Gender_Checked"/>
-                            <RadioButton x:Name="GenderBarn" Content="Barn" GroupName="Gender"
-                                         Checked="Gender_Checked"/>
-                        </StackPanel>
+                        <DockPanel Margin="0,0,0,8">
+                            <TextBlock Style="{StaticResource LabelStyle}" Text="Ålder:"
+                                       VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBox x:Name="AgeBox" Width="40" VerticalContentAlignment="Center"
+                                     LostFocus="AgeBox_LostFocus"
+                                     ToolTip="Valfritt. Lämna tomt för en typisk ålder för karaktären."/>
+                            <Button Content="🎲  Slumpa röst" Click="RandomizeVoice_Click"
+                                    Padding="8,3" Margin="8,0,0,0" HorizontalAlignment="Right"
+                                    ToolTip="Slumpar röst, tempo och pitch som passar kön och ålder – justera sedan själv"/>
+                        </DockPanel>
+
+                        <TextBlock Style="{StaticResource LabelStyle}" Text="Röst:"/>
+                        <ComboBox x:Name="VoiceComboBox" Margin="0,0,0,4"
+                                  SelectionChanged="VoiceComboBox_SelectionChanged"/>
+                        <CheckBox x:Name="ShowAllVoicesCheck" Content="Visa alla röster"
+                                  FontSize="11" Margin="0,0,0,10"
+                                  Checked="ShowAllVoices_Changed" Unchecked="ShowAllVoices_Changed"
+                                  ToolTip="Annars visas bara röster som passar karaktären"/>
 
                         <Grid Margin="0,0,0,2">
                             <Grid.ColumnDefinitions>
@@ -375,6 +385,10 @@
                         <TextBlock Text="Stora manus kan ta flera minuter. Fönstret svarar igen när analysen är klar."
                                    FontSize="10" Foreground="#AAA" TextWrapping="Wrap"
                                    TextAlignment="Center" Margin="0,14,0,0"/>
+
+                        <Button x:Name="AiProgressCancel" Content="Avbryt" Visibility="Collapsed"
+                                HorizontalAlignment="Center" Padding="16,4" Margin="0,12,0,0"
+                                Click="AiProgressCancel_Click"/>
                     </StackPanel>
                 </Border>
             </Border>

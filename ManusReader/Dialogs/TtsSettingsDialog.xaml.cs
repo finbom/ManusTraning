@@ -1,5 +1,9 @@
+using System;
+using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Windows;
+using System.Windows.Navigation;
 using ManusReader.Models;
 using ManusReader.Services;
 
@@ -8,6 +12,8 @@ namespace ManusReader.Dialogs;
 public partial class TtsSettingsDialog : Window
 {
     public AppSettings Result { get; private set; }
+
+    private CancellationTokenSource? _downloadCts;
 
     public TtsSettingsDialog(AppSettings current)
     {
@@ -32,6 +38,8 @@ public partial class TtsSettingsDialog : Window
 
         NaturalVoicesList.SelectedIndex = 0;
 
+        RefreshPiperPanel();
+
         // Pre-fill Azure fields
         AzureKeyBox.Text = current.Azure.SubscriptionKey == "YOUR_KEY" ? "" : current.Azure.SubscriptionKey;
         AzureRegionBox.Text = current.Azure.Region;
@@ -40,19 +48,26 @@ public partial class TtsSettingsDialog : Window
         // Set initial radio + panel state
         RadioNatural.IsChecked = current.Provider == TtsProvider.Natural;
         RadioAzure.IsChecked = current.Provider == TtsProvider.Azure;
+        RadioPiper.IsChecked = current.Provider == TtsProvider.Piper;
         UpdatePanels();
+
+        Closing += (_, _) => _downloadCts?.Cancel();
     }
 
     private void Provider_Changed(object sender, RoutedEventArgs e) => UpdatePanels();
 
     private void UpdatePanels()
     {
-        if (NaturalPanel == null || AzurePanel == null) return;
-        var natural = RadioNatural.IsChecked == true;
-        NaturalPanel.IsEnabled = natural;
-        NaturalPanel.Opacity = natural ? 1.0 : 0.45;
-        AzurePanel.IsEnabled = !natural;
-        AzurePanel.Opacity = natural ? 0.45 : 1.0;
+        if (NaturalPanel == null || AzurePanel == null || PiperPanel == null) return;
+        SetPanelActive(NaturalPanel, RadioNatural.IsChecked == true);
+        SetPanelActive(PiperPanel, RadioPiper.IsChecked == true);
+        SetPanelActive(AzurePanel, RadioAzure.IsChecked == true);
+    }
+
+    private static void SetPanelActive(FrameworkElement panel, bool active)
+    {
+        panel.IsEnabled = active;
+        panel.Opacity = active ? 1.0 : 0.45;
     }
 
     private async void TestNatural_Click(object sender, RoutedEventArgs e)
@@ -94,7 +109,16 @@ public partial class TtsSettingsDialog : Window
 
     private void Ok_Click(object sender, RoutedEventArgs e)
     {
-        Result.Provider = RadioNatural.IsChecked == true ? TtsProvider.Natural : TtsProvider.Azure;
+        if (RadioPiper.IsChecked == true && !Piper.IsReady)
+        {
+            MessageBox.Show("Ladda ner Piper och minst en röst innan du väljer Piper.",
+                "Piper", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        Result.Provider = RadioPiper.IsChecked == true ? TtsProvider.Piper
+                        : RadioAzure.IsChecked == true ? TtsProvider.Azure
+                        : TtsProvider.Natural;
         Result.Azure.SubscriptionKey = string.IsNullOrWhiteSpace(AzureKeyBox.Text)
             ? "YOUR_KEY" : AzureKeyBox.Text.Trim();
         Result.Azure.Region = AzureRegionBox.Text.Trim();
@@ -144,6 +168,143 @@ public partial class TtsSettingsDialog : Window
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => DialogResult = false;
+
+    // ------------------------------------------------------------------ Piper
+
+    private Piper.CatalogVoice? SelectedPiperVoice =>
+        (PiperVoicesList.SelectedItem as VoiceItem) is { } item
+            ? Piper.Catalog.FirstOrDefault(v => v.Id == item.Name)
+            : null;
+
+    private void RefreshPiperPanel()
+    {
+        var selectedId = SelectedPiperVoice?.Id;
+
+        PiperVoicesList.Items.Clear();
+        foreach (var v in Piper.Catalog)
+        {
+            var state = Piper.IsVoiceInstalled(v.Id) ? "✔ nedladdad" : "ej nedladdad";
+            PiperVoicesList.Items.Add(new VoiceItem(v.Id, $"{v.Display}  –  {state}  ·  {v.Credit}, licens {v.License}"));
+        }
+
+        var idx = Piper.Catalog.ToList().FindIndex(v => v.Id == selectedId);
+        PiperVoicesList.SelectedIndex = idx >= 0 ? idx : 0;
+
+        PiperStatusText.Text = !Piper.IsEngineInstalled
+            ? "Piper är inte nedladdat. Välj en röst och klicka på Ladda ner."
+            : Piper.InstalledVoices().Count == 0
+                ? "Piper är nedladdat. Ladda ner minst en röst."
+                : "Piper är redo.";
+
+        UpdatePiperButtons();
+    }
+
+    private void PiperVoicesList_SelectionChanged(object sender,
+        System.Windows.Controls.SelectionChangedEventArgs e) => UpdatePiperButtons();
+
+    private void UpdatePiperButtons()
+    {
+        var busy = _downloadCts != null;
+        var voice = SelectedPiperVoice;
+        var installed = voice != null && Piper.IsVoiceInstalled(voice.Id);
+
+        PiperDownloadButton.IsEnabled = !busy && voice != null && (!installed || !Piper.IsEngineInstalled);
+        PiperTestButton.IsEnabled = !busy && installed && Piper.IsEngineInstalled;
+        PiperRemoveButton.IsEnabled = !busy && installed;
+        PiperVoicesList.IsEnabled = !busy;
+    }
+
+    private async void PiperDownload_Click(object sender, RoutedEventArgs e)
+    {
+        var voice = SelectedPiperVoice;
+        if (voice == null) return;
+
+        _downloadCts = new CancellationTokenSource();
+        var ct = _downloadCts.Token;
+        PiperProgress.Visibility = Visibility.Visible;
+        UpdatePiperButtons();
+
+        var progress = new Progress<Piper.DownloadProgress>(p =>
+        {
+            var mb = p.Done / 1048576.0;
+            if (p.Total is > 0)
+            {
+                PiperProgress.IsIndeterminate = false;
+                PiperProgress.Value = 100.0 * p.Done / p.Total.Value;
+                PiperStatusText.Text = $"Laddar ner {p.What}: {mb:0} av {p.Total.Value / 1048576.0:0} MB";
+            }
+            else
+            {
+                PiperProgress.IsIndeterminate = true;
+                PiperStatusText.Text = $"Laddar ner {p.What}: {mb:0} MB";
+            }
+        });
+
+        try
+        {
+            if (!Piper.IsEngineInstalled)
+                await Piper.InstallEngineAsync(progress, ct);
+            if (!Piper.IsVoiceInstalled(voice.Id))
+                await Piper.InstallVoiceAsync(voice, progress, ct);
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Nedladdningen misslyckades:\n{ex.Message}",
+                "Piper", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _downloadCts = null;
+            if (IsLoaded)
+            {
+                PiperProgress.Visibility = Visibility.Collapsed;
+                RefreshPiperPanel();
+            }
+        }
+
+        if (Piper.IsReady) RadioPiper.IsChecked = true;
+    }
+
+    private async void PiperTest_Click(object sender, RoutedEventArgs e)
+    {
+        var voice = SelectedPiperVoice;
+        if (voice == null) return;
+
+        PiperTestButton.IsEnabled = false;
+        try
+        {
+            using var svc = new PiperTtsService();
+            await svc.SpeakAsync("Hej, det här är ett rösttest med Piper.",
+                new VoiceProfile { PiperVoiceName = voice.Id });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Piper-fel: {ex.Message}", "Piper",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally { UpdatePiperButtons(); }
+    }
+
+    private void PiperRemove_Click(object sender, RoutedEventArgs e)
+    {
+        var voice = SelectedPiperVoice;
+        if (voice == null) return;
+
+        try { Piper.RemoveVoice(voice.Id); }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Kunde inte ta bort rösten:\n{ex.Message}", "Piper",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        RefreshPiperPanel();
+    }
+
+    private void Hyperlink_RequestNavigate(object sender, RequestNavigateEventArgs e)
+    {
+        Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+        e.Handled = true;
+    }
 
     private record VoiceItem(string Name, string Display)
     {

@@ -39,6 +39,7 @@ namespace ManusReader
         private readonly System.Windows.Threading.DispatcherTimer _aiTimer =
             new() { Interval = TimeSpan.FromSeconds(1) };
         private readonly System.Diagnostics.Stopwatch _aiStopwatch = new();
+        private CancellationTokenSource? _downloadCts;
         private int _aiCompleted;
         private int _aiTotal;
 
@@ -61,6 +62,8 @@ namespace ManusReader
         };
 
         private List<(string Name, string Display, VoiceGender Gender)> _voices = new();
+        // The subset of _voices currently listed in VoiceComboBox (filtered by character).
+        private List<(string Name, string Display, VoiceGender Gender)> _shownVoices = new();
 
         // ================================================================== constructor
         public MainWindow()
@@ -69,6 +72,7 @@ namespace ManusReader
 
             ScriptDataGrid.ItemsSource = _scriptLines;
             RolesListBox.ItemsSource = _voiceProfiles;
+            CharacterComboBox.ItemsSource = Characters.All.Select(c => c.Display).ToList();
 
             LoadSettings();
             ApplySettings();
@@ -235,6 +239,13 @@ namespace ManusReader
                 _ttsService = svc;
                 SetStatus("Azure Neural TTS aktiverat");
             }
+            else if (_settings.Provider == TtsProvider.Piper)
+            {
+                _ttsService = new PiperTtsService();
+                SetStatus(Piper.IsReady
+                    ? "Piper-röster aktiverade"
+                    : "Piper är valt men inte nedladdat – öppna TTS-inställningar");
+            }
             else
             {
                 _ttsService = new WindowsTtsService();
@@ -253,15 +264,81 @@ namespace ManusReader
 
         private void RefreshVoiceList()
         {
-            _voices = _settings.Provider == TtsProvider.Natural
-                ? WindowsTtsService.GetVoices()
-                : AzureVoices;
+            _voices = _settings.Provider switch
+            {
+                TtsProvider.Natural => WindowsTtsService.GetVoices(),
+                TtsProvider.Piper => Piper.InstalledVoices(),
+                _ => AzureVoices
+            };
 
-            _suppressProfileUpdate = true;
-            VoiceComboBox.ItemsSource = _voices.Select(v => v.Display).ToList();
-            _suppressProfileUpdate = false;
+            // Roles created under another engine may lack a voice for this one –
+            // give them one that fits the character.
+            if (_voices.Count > 0)
+            {
+                foreach (var p in _voiceProfiles)
+                {
+                    if (_voices.Any(v => v.Name == ActiveVoiceName(p))) continue;
+                    SetActiveVoiceName(p, PreferredVoices(p.Character).FirstOrDefault().Name ?? _voices[0].Name);
+                }
+            }
 
             RefreshProfileEditor();
+        }
+
+        // Voices that suit a character type, Swedish first. Children use a real
+        // Swedish child voice when the engine has one, otherwise adult female
+        // voices (a foreign child voice would mispronounce the Swedish script).
+        private List<(string Name, string Display, VoiceGender Gender)> VoicesFor(CharacterType type)
+        {
+            var info = Characters.Get(type);
+            var children = _voices.Where(v => v.Gender == VoiceGender.Barn && IsSwedishVoice(v)).ToList();
+            var fitting = Characters.IsChild(type) && children.Count > 0
+                ? children
+                : _voices.Where(v => v.Gender == info.VoiceGender).ToList();
+            if (Characters.IsChild(type))
+                fitting.AddRange(_voices.Where(v => v.Gender == VoiceGender.Barn && !fitting.Contains(v)));
+
+            return fitting.OrderBy(v => IsSwedishVoice(v) ? 0 : 1).ToList();
+        }
+
+        // Fitting voices if any exist, otherwise everything (Swedish first).
+        private List<(string Name, string Display, VoiceGender Gender)> PreferredVoices(CharacterType type)
+        {
+            var fitting = VoicesFor(type);
+            return fitting.Count > 0 ? fitting : _voices.OrderBy(v => IsSwedishVoice(v) ? 0 : 1).ToList();
+        }
+
+        // Starting tempo/pitch for a character. A real child voice needs no shift.
+        private (double Rate, double Pitch) PresetFor(CharacterType type, string voiceName)
+        {
+            var info = Characters.Get(type);
+            var isChildVoice = _voices.Any(v => v.Name == voiceName && v.Gender == VoiceGender.Barn);
+            if (isChildVoice)
+                return (info.Rate, type == CharacterType.BarnPojke ? -10 : 0);
+            return (info.Rate, info.Pitch);
+        }
+
+        // The voice dropdown: voices fitting the role's character, or all voices
+        // when "Visa alla röster" is ticked. The current voice is always included.
+        private void RefreshVoiceCombo()
+        {
+            if (_selectedProfile == null) return;
+
+            var active = ActiveVoiceName(_selectedProfile);
+            _shownVoices = ShowAllVoicesCheck.IsChecked == true
+                ? _voices.OrderBy(v => IsSwedishVoice(v) ? 0 : 1).ToList()
+                : PreferredVoices(_selectedProfile.Character);
+
+            if (!_shownVoices.Any(v => v.Name == active))
+            {
+                var current = _voices.FirstOrDefault(v => v.Name == active);
+                if (current.Name != null) _shownVoices.Insert(0, current);
+            }
+
+            _suppressProfileUpdate = true;
+            VoiceComboBox.ItemsSource = _shownVoices.Select(v => v.Display).ToList();
+            VoiceComboBox.SelectedIndex = Math.Max(0, _shownVoices.FindIndex(v => v.Name == active));
+            _suppressProfileUpdate = false;
         }
 
         private void OpenTtsSettings_Click(object sender, RoutedEventArgs e)
@@ -309,6 +386,30 @@ namespace ManusReader
             }
         }
 
+        // Fills in ages from the script's cast list ("ANNIE 11 år") for roles without
+        // one, and sets their character, voice, tempo and pitch to suit the age.
+        // Returns how many roles got an age.
+        private int ApplyCastAges(string wordPath)
+        {
+            Dictionary<string, int> ages;
+            try { ages = WordScriptParser.ReadCastAges(wordPath); }
+            catch { return 0; }
+
+            var count = 0;
+            foreach (var p in _voiceProfiles.Where(p => p.Age == null))
+            {
+                if (!ages.TryGetValue(p.RoleName, out var age)) continue;
+                p.Age = age;
+                p.Character = Characters.FromAgeAndGender(age, Characters.IsFemale(p.Character));
+                var voice = PreferredVoices(p.Character).FirstOrDefault().Name;
+                if (voice != null) SetActiveVoiceName(p, voice);
+                (p.Rate, p.Pitch) = PresetFor(p.Character, ActiveVoiceName(p));
+                count++;
+            }
+            if (count > 0) RefreshProfileEditor();
+            return count;
+        }
+
         // Ensures every unique, non-direction role in script lines has a voice profile,
         // and removes profiles for roles that are no longer used.
         private void SyncVoiceProfiles()
@@ -334,28 +435,33 @@ namespace ManusReader
 
         private VoiceProfile CreateDefaultProfile(string roleName, int index)
         {
-            // Guess gender from the role name; fall back to alternating if unknown.
-            var gender = NameGender.Guess(roleName)
-                         ?? (index % 2 == 0 ? VoiceGender.Man : VoiceGender.Kvinna);
+            // Guess the character from the role name (MORMOR, POJKEN, ANNA …);
+            // fall back to alternating man/woman if unknown.
+            var character = NameGender.GuessCharacter(roleName)
+                            ?? (index % 2 == 0 ? CharacterType.VuxenMan : CharacterType.VuxenKvinna);
 
             // Always prefer a Swedish voice — the script is read aloud in Swedish
             // even when a character has a foreign (e.g. English) name. Only fall
-            // back to non-Swedish voices if no Swedish voice of that gender exists.
-            var sameGender = _voices.Where(v => v.Gender == gender).ToList();
-            var swedishSameGender = sameGender.Where(IsSwedishVoice).ToList();
-            var pool = swedishSameGender.Count > 0 ? swedishSameGender
-                     : sameGender.Count > 0 ? sameGender
-                     : _voices;
+            // back to non-Swedish voices if no fitting Swedish voice exists.
+            var fitting = PreferredVoices(character);
+            var swedish = fitting.Where(IsSwedishVoice).ToList();
+            var pool = swedish.Count > 0 ? swedish : fitting;
             var voice = pool.Count > 0 ? pool[index % pool.Count] : default;
 
-            var profile = new VoiceProfile { RoleName = roleName, Gender = gender };
+            var (rate, pitch) = PresetFor(character, voice.Name ?? "");
+            var profile = new VoiceProfile
+            {
+                RoleName = roleName, Character = character, Rate = rate, Pitch = pitch
+            };
 
             // Gender-aware Swedish fallback if the voice catalog is empty.
-            var defaultAzure = gender == VoiceGender.Kvinna
+            var defaultAzure = Characters.Get(character).VoiceGender == VoiceGender.Kvinna
                 ? "sv-SE-SofieNeural" : "sv-SE-MattiasNeural";
 
             if (_settings.Provider == TtsProvider.Natural)
                 profile.NaturalVoiceName = voice.Name ?? WindowsTtsService.DefaultVoiceName();
+            else if (_settings.Provider == TtsProvider.Piper)
+                profile.PiperVoiceName = voice.Name ?? "";
             else
                 profile.VoiceName = voice.Name ?? defaultAzure;
 
@@ -370,13 +476,21 @@ namespace ManusReader
             || (v.Display?.Contains("swedish", StringComparison.OrdinalIgnoreCase) ?? false)
             || (v.Name?.Contains("swedish", StringComparison.OrdinalIgnoreCase) ?? false);
 
-        private string ActiveVoiceName(VoiceProfile p) =>
-            _settings.Provider == TtsProvider.Natural ? p.NaturalVoiceName : p.VoiceName;
+        private string ActiveVoiceName(VoiceProfile p) => _settings.Provider switch
+        {
+            TtsProvider.Natural => p.NaturalVoiceName,
+            TtsProvider.Piper => p.PiperVoiceName,
+            _ => p.VoiceName
+        };
 
         private void SetActiveVoiceName(VoiceProfile p, string name)
         {
-            if (_settings.Provider == TtsProvider.Natural) p.NaturalVoiceName = name;
-            else p.VoiceName = name;
+            switch (_settings.Provider)
+            {
+                case TtsProvider.Natural: p.NaturalVoiceName = name; break;
+                case TtsProvider.Piper: p.PiperVoiceName = name; break;
+                default: p.VoiceName = name; break;
+            }
         }
 
         // ================================================================== Word import (rule-based)
@@ -388,11 +502,15 @@ namespace ManusReader
                 Title = "Öppna Word-manus"
             };
             if (dlg.ShowDialog() != true) return;
+            LoadWordScript(dlg.FileName);
+        }
 
-            SetStatus($"Läser in {Path.GetFileName(dlg.FileName)}...");
+        private void LoadWordScript(string path, (List<ScriptLine> Lines, HashSet<string> Roles)? parsed = null)
+        {
+            SetStatus($"Läser in {Path.GetFileName(path)}...");
             try
             {
-                var (lines, roles) = WordScriptParser.Parse(dlg.FileName);
+                var (lines, roles) = parsed ?? WordScriptParser.Parse(path);
 
                 if (lines.Count == 0)
                 {
@@ -403,15 +521,17 @@ namespace ManusReader
                     return;
                 }
 
-                _currentScriptPath = dlg.FileName;
+                _currentScriptPath = path;
                 _currentLineIndex = -1;
                 _scriptLines.Clear();
                 foreach (var l in lines) _scriptLines.Add(l);
 
                 SyncVoiceProfiles();
+                var aged = ApplyCastAges(path);
 
-                Title = $"ManusReader – {Path.GetFileName(dlg.FileName)}";
-                SetStatus($"Klar! {lines.Count} repliker, {_voiceProfiles.Count} roller inlästa.");
+                Title = $"ManusReader – {Path.GetFileName(path)}";
+                SetStatus($"Klar! {lines.Count} repliker, {_voiceProfiles.Count} roller inlästa." +
+                          (aged > 0 ? $" Ålder hämtad från rollistan för {aged} roller." : ""));
                 UpdateProgress();
             }
             catch (Exception ex)
@@ -423,6 +543,96 @@ namespace ManusReader
         }
 
         // ================================================================== Word + AI import
+        // Downloads (first time, after asking) and starts ManusReader's own Ollama
+        // with the pinned model. Returns false if the user declined or it failed.
+        private async Task<bool> EnsureAiReadyAsync()
+        {
+            var needEngine = !ManagedOllama.IsEngineInstalled;
+            if (needEngine)
+            {
+                var gb = (ManagedOllama.EngineSizeMb + ManagedOllama.ModelSizeMb) / 1024.0;
+                var answer = MessageBox.Show(
+                    $"AI-tolkningen kräver en engångsnedladdning på cirka {gb:0.0} GB:\n\n" +
+                    $"• Ollama {ManagedOllama.Version} (AI-motorn)\n" +
+                    $"• AI-modellen {ManagedOllama.Model}\n\n" +
+                    $"Filerna sparas i:\n{ManagedOllama.RootDir}\n\n" +
+                    "Ladda ner nu?",
+                    "Ladda ner AI", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                if (answer != MessageBoxResult.Yes) return false;
+            }
+
+            _downloadCts = new CancellationTokenSource();
+            var ct = _downloadCts.Token;
+            var progress = new Progress<ManagedOllama.DownloadProgress>(SetDownloadProgress);
+
+            ShowAiProgress(title: "🤖 Förbereder AI", preparing: "Startar AI-motorn…");
+            AiProgressCancel.Visibility = Visibility.Visible;
+            try
+            {
+                if (needEngine)
+                    await ManagedOllama.InstallEngineAsync(progress, ct);
+
+                SetStatus("Startar AI-motorn...");
+                await ManagedOllama.EnsureRunningAsync(ct);
+
+                if (!await ManagedOllama.IsModelInstalledAsync())
+                {
+                    if (!needEngine)
+                    {
+                        // Engine was already there, so the user hasn't been asked yet.
+                        var answer = MessageBox.Show(
+                            $"AI-modellen {ManagedOllama.Model} behöver laddas ner " +
+                            $"(cirka {ManagedOllama.ModelSizeMb / 1024.0:0.0} GB). Ladda ner nu?",
+                            "Ladda ner AI-modell", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                        if (answer != MessageBoxResult.Yes) return false;
+                    }
+                    await ManagedOllama.PullModelAsync(progress, ct);
+                }
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                SetStatus("Nedladdningen avbröts");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"AI-motorn kunde inte förberedas:\n\n{ex.Message}",
+                    "AI ej tillgänglig", MessageBoxButton.OK, MessageBoxImage.Warning);
+                SetStatus("AI ej tillgänglig");
+                return false;
+            }
+            finally
+            {
+                _downloadCts = null;
+                AiProgressCancel.Visibility = Visibility.Collapsed;
+                HideAiProgress();
+            }
+        }
+
+        private void SetDownloadProgress(ManagedOllama.DownloadProgress p)
+        {
+            _aiTotal = 0; // keep RefreshAiProgressText from overwriting the text below
+            var mb = p.Done / 1048576.0;
+            if (p.Total is > 0)
+            {
+                AiProgressBar.IsIndeterminate = false;
+                AiProgressBar.Maximum = p.Total.Value;
+                AiProgressBar.Value = p.Done;
+                AiProgressStep.Text = $"Laddar ner {p.What}: {mb:0} av {p.Total.Value / 1048576.0:0} MB";
+                AiProgressPercent.Text = $"{100.0 * p.Done / p.Total.Value:0}%";
+            }
+            else
+            {
+                AiProgressBar.IsIndeterminate = true;
+                AiProgressStep.Text = p.Done > 0 ? $"{p.What}: {mb:0} MB" : $"{p.What}…";
+                AiProgressPercent.Text = "";
+            }
+            AiProgressEta.Text = "";
+        }
+
+        private void AiProgressCancel_Click(object sender, RoutedEventArgs e) => _downloadCts?.Cancel();
+
         private async void OpenWordWithAI_Click(object sender, RoutedEventArgs e)
         {
             var dlg = new OpenFileDialog
@@ -432,34 +642,32 @@ namespace ManusReader
             };
             if (dlg.ShowDialog() != true) return;
 
-            // Check that Ollama is running
-            SetStatus("Kontrollerar Ollama...");
-            if (!await _ollamaParser.IsAvailableAsync())
+            // A script with clear structure (bold role names) is read better, and in
+            // seconds, by the rule-based import than by the small local AI model.
+            try
             {
-                MessageBox.Show(
-                    "Ollama verkar inte köra.\n\n" +
-                    "Starta Ollama (ollama serve) och se till att modellen är nedladdad.\n" +
-                    "Kör setup-ollama.bat i projektmappen om du inte installerat det ännu.",
-                    "Ollama ej tillgänglig", MessageBoxButton.OK, MessageBoxImage.Warning);
-                SetStatus("Ollama ej tillgänglig");
-                return;
+                var ruleBased = WordScriptParser.Parse(dlg.FileName);
+                var speeches = ruleBased.Lines.Count(l => !l.IsStageDirection && !l.IsUnknown);
+                if (ruleBased.Roles.Count >= 2 && speeches >= 10)
+                {
+                    var answer = MessageBox.Show(
+                        "Manuset har tydlig struktur (rollnamn i fetstil). Den vanliga inläsningen " +
+                        $"hittade {ruleBased.Roles.Count} roller och {speeches} repliker.\n\n" +
+                        "För sådana manus är den vanliga inläsningen både snabbare och säkrare än AI.\n\n" +
+                        "Ja = använd vanlig inläsning (rekommenderas)\nNej = tolka ändå med AI",
+                        "Tydlig struktur hittad", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+                    if (answer == MessageBoxResult.Cancel) return;
+                    if (answer == MessageBoxResult.Yes)
+                    {
+                        LoadWordScript(dlg.FileName, ruleBased);
+                        return;
+                    }
+                }
             }
+            catch { /* unreadable for the rules – let the AI try */ }
 
-            // Pick best available model
-            var models = await _ollamaParser.GetAvailableModelsAsync();
-            if (models.Count == 0)
-            {
-                MessageBox.Show(
-                    "Inga modeller hittades i Ollama.\n\n" +
-                    "Ladda ner en modell med:\n  ollama pull llama3.2",
-                    "Ingen modell", MessageBoxButton.OK, MessageBoxImage.Warning);
-                SetStatus("Ingen Ollama-modell hittades");
-                return;
-            }
-
-            // Prefer llama3.2 or llama3.1, otherwise first available
-            _ollamaParser.Model = models.FirstOrDefault(m =>
-                m.StartsWith("llama3.2") || m.StartsWith("llama3.1")) ?? models[0];
+            // Make sure our own Ollama and its model are downloaded and running.
+            if (!await EnsureAiReadyAsync()) return;
 
             string rawText;
             try
@@ -501,6 +709,7 @@ namespace ManusReader
                 foreach (var l in lines) _scriptLines.Add(l);
 
                 SyncVoiceProfiles();
+                ApplyCastAges(dlg.FileName);
 
                 Title = $"ManusReader – {Path.GetFileName(dlg.FileName)} (AI)";
 
@@ -628,7 +837,12 @@ namespace ManusReader
                     {
                         RoleName = pd.RoleName,
                         VoiceName = pd.VoiceName,
-                        Gender = (VoiceGender)pd.Gender,
+                        NaturalVoiceName = pd.NaturalVoiceName,
+                        PiperVoiceName = pd.PiperVoiceName,
+                        Character = pd.Character is int c
+                            ? (CharacterType)c
+                            : Characters.FromLegacyGender((VoiceGender)pd.Gender),
+                        Age = pd.Age,
                         Rate = pd.Rate,
                         Pitch = pd.Pitch
                     });
@@ -687,7 +901,11 @@ namespace ManusReader
                     {
                         RoleName = p.RoleName,
                         VoiceName = p.VoiceName,
-                        Gender = (int)p.Gender,
+                        NaturalVoiceName = p.NaturalVoiceName,
+                        PiperVoiceName = p.PiperVoiceName,
+                        Gender = (int)Characters.ToLegacyGender(p.Character),
+                        Character = (int)p.Character,
+                        Age = p.Age,
                         Rate = p.Rate,
                         Pitch = p.Pitch
                     }).ToList(),
@@ -725,12 +943,11 @@ namespace ManusReader
             VoiceProfileEditor.IsEnabled = true;
             SelectedRoleLabel.Text = $"Roll: {_selectedProfile.RoleName}";
 
-            var idx = _voices.FindIndex(v => v.Name == ActiveVoiceName(_selectedProfile));
-            VoiceComboBox.SelectedIndex = idx >= 0 ? idx : 0;
-
-            GenderMan.IsChecked = _selectedProfile.Gender == VoiceGender.Man;
-            GenderKvinna.IsChecked = _selectedProfile.Gender == VoiceGender.Kvinna;
-            GenderBarn.IsChecked = _selectedProfile.Gender == VoiceGender.Barn;
+            CharacterComboBox.SelectedIndex =
+                Characters.All.ToList().FindIndex(c => c.Type == _selectedProfile.Character);
+            AgeBox.Text = _selectedProfile.Age?.ToString() ?? "";
+            RefreshVoiceCombo();
+            _suppressProfileUpdate = true;
 
             TempoSlider.Value = _selectedProfile.Rate;
             PitchSlider.Value = _selectedProfile.Pitch;
@@ -836,39 +1053,78 @@ namespace ManusReader
         {
             if (_suppressProfileUpdate || _selectedProfile == null) return;
             var idx = VoiceComboBox.SelectedIndex;
-            if (idx >= 0 && idx < _voices.Count)
-                SetActiveVoiceName(_selectedProfile, _voices[idx].Name);
+            if (idx >= 0 && idx < _shownVoices.Count)
+                SetActiveVoiceName(_selectedProfile, _shownVoices[idx].Name);
         }
 
-        private void Gender_Checked(object sender, RoutedEventArgs e)
+        private void ShowAllVoices_Changed(object sender, RoutedEventArgs e) => RefreshVoiceCombo();
+
+        private void AgeBox_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (_selectedProfile == null) return;
+            _selectedProfile.Age = int.TryParse(AgeBox.Text.Trim(), out var age)
+                ? Math.Clamp(age, 1, 110) : null;
+            AgeBox.Text = _selectedProfile.Age?.ToString() ?? "";
+        }
+
+        private void RandomizeVoice_Click(object sender, RoutedEventArgs e)
+        {
+            if (_selectedProfile == null) return;
+            AgeBox_LostFocus(sender, e); // pick up an age typed but not yet committed
+            RandomizeVoice(_selectedProfile);
+            RefreshProfileEditor();
+
+            var voice = _voices.FirstOrDefault(v => v.Name == ActiveVoiceName(_selectedProfile)).Display;
+            SetStatus($"{_selectedProfile.RoleName}: {voice}, tempo {FormatPct(_selectedProfile.Rate)}, " +
+                      $"pitch {FormatPct(_selectedProfile.Pitch)} – justera gärna med reglagen");
+        }
+
+        // Rolls a voice for the role's gender and age (the entered age, or a typical
+        // one for its character): a random fitting voice, preferring Swedish ones
+        // and a different one than now, plus tempo/pitch within the age's range.
+        private void RandomizeVoice(VoiceProfile p)
+        {
+            var female = Characters.IsFemale(p.Character);
+            var age = p.Age ?? Characters.DefaultAge(p.Character);
+            p.Character = Characters.FromAgeAndGender(age, female);
+
+            var pool = PreferredVoices(p.Character);
+            var swedish = pool.Where(IsSwedishVoice).ToList();
+            if (swedish.Count > 0) pool = swedish;
+            var others = pool.Where(v => v.Name != ActiveVoiceName(p)).ToList();
+            if (others.Count > 0) pool = others;
+            if (pool.Count > 0)
+                SetActiveVoiceName(p, pool[Random.Shared.Next(pool.Count)].Name);
+
+            var (rateMin, rateMax, pitchMin, pitchMax) = Characters.RangeFor(age, female);
+            p.Rate = Math.Round(rateMin + Random.Shared.NextDouble() * (rateMax - rateMin));
+            p.Pitch = Math.Round(pitchMin + Random.Shared.NextDouble() * (pitchMax - pitchMin));
+        }
+
+        // Choosing a character picks a fitting voice (if the current one doesn't
+        // fit) and applies the character's tempo/pitch preset.
+        private void CharacterComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (_suppressProfileUpdate || _selectedProfile == null) return;
+            var idx = CharacterComboBox.SelectedIndex;
+            if (idx < 0) return;
 
-            var gender = GenderMan.IsChecked == true ? VoiceGender.Man
-                       : GenderKvinna.IsChecked == true ? VoiceGender.Kvinna
-                       : VoiceGender.Barn;
+            var type = Characters.All[idx].Type;
+            _selectedProfile.Character = type;
+            // An entered age that contradicts the new character no longer applies.
+            if (_selectedProfile.Age is int age
+                && Characters.FromAgeAndGender(age, Characters.IsFemale(type)) != type)
+                _selectedProfile.Age = null;
 
-            _selectedProfile.Gender = gender;
+            var fitting = VoicesFor(type);
+            if (fitting.Count > 0 && !fitting.Any(v => v.Name == ActiveVoiceName(_selectedProfile)))
+                SetActiveVoiceName(_selectedProfile, fitting[0].Name);
 
-            // Auto-select a matching voice
-            var preferred = _voices.FirstOrDefault(v => v.Gender == gender);
-            if (preferred.Name != null)
-            {
-                SetActiveVoiceName(_selectedProfile, preferred.Name);
-                _suppressProfileUpdate = true;
-                VoiceComboBox.SelectedIndex = _voices.FindIndex(v => v.Name == preferred.Name);
-                _suppressProfileUpdate = false;
-            }
+            var (rate, pitch) = PresetFor(type, ActiveVoiceName(_selectedProfile));
+            _selectedProfile.Rate = rate;
+            _selectedProfile.Pitch = pitch;
 
-            // Raise pitch for child
-            if (gender == VoiceGender.Barn && _selectedProfile.Pitch == 0)
-            {
-                _selectedProfile.Pitch = 30;
-                _suppressProfileUpdate = true;
-                PitchSlider.Value = 30;
-                PitchValueLabel.Text = "+30%";
-                _suppressProfileUpdate = false;
-            }
+            RefreshProfileEditor();
         }
 
         private void TempoSlider_ValueChanged(object sender,
@@ -1152,14 +1408,14 @@ namespace ManusReader
                             // Computer's line — speak it, then pause.
                             var profile = ResolveProfile(line);
                             SetStatus($"💻 Datorn läser: {line.RoleName} (Mellanslag = hoppa)");
-                            await _ttsService.SpeakAsync(line.Text, profile);
+                            await _ttsService.SpeakAsync(line.SpokenText, profile);
                             stepToken.ThrowIfCancellationRequested();
                             await Task.Delay(MsFromSeconds(pauseBetween), stepToken);
                         }
                         else if (!line.IsStageDirection && !line.IsUnknown)
                         {
                             // Your line — wait so you can say it out loud.
-                            var ms = myAuto ? EstimateMyLineMs(line.Text) : MsFromSeconds(myFixed);
+                            var ms = myAuto ? EstimateMyLineMs(line.SpokenText) : MsFromSeconds(myFixed);
                             SetStatus($"🎤 Din replik: {line.RoleName} – säg den nu " +
                                       $"({ms / 1000.0:0.#}s, Mellanslag = klar)");
                             await Task.Delay(ms, stepToken);
@@ -1275,6 +1531,15 @@ namespace ManusReader
                 return;
             }
 
+            if (_settings.Provider == TtsProvider.Piper && !_ttsService.IsConfigured)
+            {
+                MessageBox.Show(
+                    "Piper är inte nedladdat ännu.\n\n" +
+                    "Ladda ner Piper och minst en röst i TTS-inställningar för att exportera.",
+                    "Export", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
             if (_isPlaying) StopPlayback();
 
             // Same pause settings and line logic as rehearsal mode.
@@ -1288,12 +1553,12 @@ namespace ManusReader
                 if (line.ShouldRead)
                 {
                     var profile = ResolveProfile(line);
-                    segments.Add(new AudioExportService.SpeakSegment(line.Text, profile));
+                    segments.Add(new AudioExportService.SpeakSegment(line.SpokenText, profile));
                     segments.Add(new AudioExportService.SilenceSegment(MsFromSeconds(pauseBetween)));
                 }
                 else if (!line.IsStageDirection && !line.IsUnknown)
                 {
-                    var ms = myAuto ? EstimateMyLineMs(line.Text) : MsFromSeconds(myFixed);
+                    var ms = myAuto ? EstimateMyLineMs(line.SpokenText) : MsFromSeconds(myFixed);
                     segments.Add(new AudioExportService.SilenceSegment(ms));
                 }
             }
@@ -1332,10 +1597,12 @@ namespace ManusReader
                     Dispatcher.Invoke(() => SetAiProgress(p.Done, p.Total)));
 
                 // Pick the renderer matching the active voice engine.
-                AudioExportService.IPcmRenderer renderer =
-                    _settings.Provider == TtsProvider.Azure
-                        ? new AudioExportService.AzurePcmRenderer(_settings.Azure)
-                        : new AudioExportService.WindowsPcmRenderer();
+                AudioExportService.IPcmRenderer renderer = _settings.Provider switch
+                {
+                    TtsProvider.Azure => new AudioExportService.AzurePcmRenderer(_settings.Azure),
+                    TtsProvider.Piper => new AudioExportService.PiperPcmRenderer(),
+                    _ => new AudioExportService.WindowsPcmRenderer()
+                };
 
                 await Task.Run(() =>
                 {
@@ -1421,7 +1688,7 @@ namespace ManusReader
 
             try
             {
-                await _ttsService.SpeakAsync(line.Text, profile);
+                await _ttsService.SpeakAsync(line.SpokenText, profile);
             }
             catch (Exception ex)
             {
@@ -1489,7 +1756,7 @@ namespace ManusReader
             MessageBox.Show(
                 $"ManusReader {version?.ToString(3)}\n\n" +
                 "Öva in dina repliker – datorn läser de andra rollerna\n" +
-                "med Windows-röster eller Azure Neural TTS.\n\n" +
+                "med Windows-röster, Piper eller Azure Neural TTS.\n\n" +
                 "Kortkommandon:\n" +
                 "  Mellanslag / →   – Nästa replik\n" +
                 "  ←                – Föregående replik (manuellt läge)\n" +
@@ -1506,6 +1773,8 @@ namespace ManusReader
         {
             SaveSettings();
             _ttsService.Dispose();
+            _downloadCts?.Cancel();
+            ManagedOllama.Stop();
             base.OnClosed(e);
         }
     }

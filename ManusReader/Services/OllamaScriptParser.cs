@@ -13,38 +13,9 @@ public class OllamaScriptParser
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(10) };
 
-    public string BaseUrl { get; set; } = "http://localhost:11434";
-    public string Model { get; set; } = "llama3.2";
-
-    // ------------------------------------------------------------------ availability
-
-    public async Task<bool> IsAvailableAsync()
-    {
-        try
-        {
-            var resp = await Http.GetAsync($"{BaseUrl}/api/tags");
-            return resp.IsSuccessStatusCode;
-        }
-        catch { return false; }
-    }
-
-    public async Task<List<string>> GetAvailableModelsAsync()
-    {
-        try
-        {
-            var resp = await Http.GetAsync($"{BaseUrl}/api/tags");
-            resp.EnsureSuccessStatusCode();
-            var json = await resp.Content.ReadAsStringAsync();
-            using var doc = JsonDocument.Parse(json);
-            return doc.RootElement
-                .GetProperty("models")
-                .EnumerateArray()
-                .Select(m => m.GetProperty("name").GetString() ?? "")
-                .Where(n => !string.IsNullOrEmpty(n))
-                .ToList();
-        }
-        catch { return []; }
-    }
+    // Always our own pinned Ollama (see ManagedOllama).
+    public string BaseUrl { get; set; } = ManagedOllama.BaseUrl;
+    public string Model { get; set; } = ManagedOllama.Model;
 
     // ------------------------------------------------------------------ main entry point
 

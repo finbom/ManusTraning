@@ -15,7 +15,7 @@ namespace ManusReader.Services;
 // Renders a rehearsal to a single MP3 file. Each spoken line is synthesised to a
 // raw PCM buffer (no speaker playback) by an engine-specific IPcmRenderer, silent
 // gaps are inserted where the user speaks, and everything is encoded to MP3 with
-// LAME. Works with both the Windows and Azure voices.
+// LAME. Works with the Windows, Piper and Azure voices.
 public static class AudioExportService
 {
     public abstract record Segment;
@@ -112,6 +112,17 @@ public static class AudioExportService
         }
 
         public void Dispose() => _synth.Dispose();
+    }
+
+    // ---------------------------------------------------------------- Piper renderer
+
+    public sealed class PiperPcmRenderer : IPcmRenderer
+    {
+        public int SampleRate => Piper.SampleRate;
+
+        public byte[] RenderPcm(string text, VoiceProfile profile) => Piper.RenderPcm(text, profile);
+
+        public void Dispose() { }
     }
 
     // ---------------------------------------------------------------- Azure renderer

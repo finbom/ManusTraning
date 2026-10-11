@@ -40,6 +40,55 @@ public static class NameGender
         return null;
     }
 
+    // Like Guess, but also recognises age words (MORMOR → äldre kvinna, POJKEN →
+    // barn, pojke). Returns null when no confident guess can be made.
+    public static CharacterType? GuessCharacter(string? roleName)
+    {
+        var first = roleName?
+            .Split(new[] { ' ', '(', ')', ',', '.', '-', '–', '/', '\'' },
+                   StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault();
+
+        if (first != null)
+        {
+            if (GirlWords.Contains(first)) return CharacterType.BarnFlicka;
+            if (BoyWords.Contains(first)) return CharacterType.BarnPojke;
+            if (ElderFemaleWords.Contains(first)) return CharacterType.AldreKvinna;
+            if (ElderMaleWords.Contains(first)) return CharacterType.AldreMan;
+        }
+
+        return Guess(roleName) switch
+        {
+            VoiceGender.Kvinna => CharacterType.VuxenKvinna,
+            VoiceGender.Man => CharacterType.VuxenMan,
+            _ => null,
+        };
+    }
+
+    private static readonly HashSet<string> GirlWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "flicka", "flickan", "tös", "tösen", "jänta", "jäntan", "girl",
+    };
+
+    private static readonly HashSet<string> BoyWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "pojke", "pojken", "gosse", "gossen", "grabb", "grabben", "boy", "lad",
+    };
+
+    private static readonly HashSet<string> ElderFemaleWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "mormor", "farmor", "gammelmormor", "gammelfarmor", "gumma", "gumman",
+        "käring", "käringen", "tant", "änka", "änkan",
+        "grandma", "grandmother", "granny", "nana", "grandmom", "widow", "hag",
+    };
+
+    private static readonly HashSet<string> ElderMaleWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "morfar", "farfar", "gammelmorfar", "gammelfarfar", "gubbe", "gubben",
+        "änkling", "änklingen",
+        "grandpa", "grandfather", "granddad", "grandad", "gramps", "widower",
+    };
+
     // ---------------------------------------------------------------- role words
 
     private static readonly HashSet<string> FemaleWords = new(StringComparer.OrdinalIgnoreCase)
