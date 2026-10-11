@@ -49,7 +49,7 @@ dotnet run --project ManusReader\ManusReader.csproj
 
 ## Röster: Windows eller Azure
 
-Under **Inställningar → TTS-inställningar** väljer du vilken talsyntes programmet ska använda.
+Under **Inställningar → TTS-inställningar** (Ctrl+T) väljer du vilken talsyntes programmet ska använda.
 
 ### Windows-röster (standard)
 
@@ -101,3 +101,7 @@ Rader som AI:n inte kan koppla till en roll markeras i orange. Högerklicka på 
 |---|---|
 | Mellanslag / → / ↓ | Nästa replik. I repetitionsläget hoppar den över pausen. |
 | ← / ↑ | Föregående replik (manuellt läge) |
+| Ctrl+O | Öppna textmanus |
+| Ctrl+W | Öppna Word-manus |
+| Ctrl+S | Spara projekt |
+| Ctrl+T | TTS-inställningar |

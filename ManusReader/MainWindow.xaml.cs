@@ -1048,6 +1048,25 @@ namespace ManusReader
 
         private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
         {
+            // Menu shortcuts (shown as InputGestureText in the menus).
+            if (Keyboard.Modifiers == ModifierKeys.Control)
+            {
+                RoutedEventHandler? action = e.Key switch
+                {
+                    Key.O => OpenScript_Click,
+                    Key.W => OpenWord_Click,
+                    Key.S => SaveProject_Click,
+                    Key.T => OpenTtsSettings_Click,
+                    _ => null
+                };
+                if (action != null)
+                {
+                    e.Handled = true;
+                    action(this, new RoutedEventArgs());
+                }
+                return;
+            }
+
             if (!_isPlaying) return;
 
             // Only react to the keys we care about.
@@ -1466,14 +1485,20 @@ namespace ManusReader
 
         private void About_Click(object sender, RoutedEventArgs e)
         {
+            var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
             MessageBox.Show(
-                "ManusReader 1.0\n\n" +
-                "Öva musikal-repliker med Azure Neural TTS.\n\n" +
+                $"ManusReader {version?.ToString(3)}\n\n" +
+                "Öva in dina repliker – datorn läser de andra rollerna\n" +
+                "med Windows-röster eller Azure Neural TTS.\n\n" +
                 "Kortkommandon:\n" +
-                "  Mellanslag   – Nästa replik (under pågående läsning)\n" +
-                "  Ctrl+O       – Öppna manus\n" +
-                "  Ctrl+S       – Spara projekt\n\n" +
-                "Högerklicka i manuslistan för fler alternativ.",
+                "  Mellanslag / →   – Nästa replik\n" +
+                "  ←                – Föregående replik (manuellt läge)\n" +
+                "  Ctrl+O           – Öppna textmanus\n" +
+                "  Ctrl+W           – Öppna Word-manus\n" +
+                "  Ctrl+S           – Spara projekt\n" +
+                "  Ctrl+T           – TTS-inställningar\n\n" +
+                "Högerklicka i manuslistan för fler alternativ.\n\n" +
+                "github.com/finbom/ManusTraning",
                 "Om ManusReader", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 

@@ -6,6 +6,7 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>ManusReader</AssemblyName>
     <RootNamespace>ManusReader</RootNamespace>
+    <Version>1.0.0</Version>
     <ApplicationIcon>assets\manus-reader.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -26,12 +27,6 @@
 
   <ItemGroup>
     <Resource Include="assets\manus-reader.ico" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Update="azure-config.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
   </ItemGroup>
 
 </Project>

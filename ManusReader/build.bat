@@ -24,8 +24,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo.
-echo Kopierar konfigurationsfiler till publish-mappen...
-copy /Y azure-config.json publish\azure-config.json
+echo Kopierar exempelmanus till publish-mappen...
 if exist exempelmanus.txt copy /Y exempelmanus.txt publish\exempelmanus.txt
 
 echo.
