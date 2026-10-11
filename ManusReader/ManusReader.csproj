@@ -6,7 +6,7 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>ManusReader</AssemblyName>
     <RootNamespace>ManusReader</RootNamespace>
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <ApplicationIcon>assets\manus-reader.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
