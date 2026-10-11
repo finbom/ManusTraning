@@ -23,6 +23,9 @@ namespace ManusReader.Models
             set { _text = value; OnPropertyChanged(nameof(Text)); }
         }
 
+        // What is read aloud: Text without inline stage directions "(…)".
+        public string SpokenText => Services.ScriptHeuristics.ForSpeech(Text);
+
         public bool IsStageDirection { get; set; }
         public bool IsUnknown { get; set; }
 
