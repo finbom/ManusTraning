@@ -6,6 +6,8 @@
 
 ManusReader hjälper dig att öva in dina repliker i ett teatermanus. Datorn läser upp de andra rollerna med talsyntes och väntar medan du säger dina egna.
 
+![ManusReader med ett inläst manus: roller och röstinställningar till vänster, repliker till höger](ManusReader/assets/Screenshot1.png)
+
 ## Vad programmet gör
 
 - Läser in manus som textfil (`.txt`) eller Word-dokument (`.docx`).
