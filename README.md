@@ -18,8 +18,20 @@ ManusReader hjälper dig att öva in dina repliker i ett teatermanus. Datorn lä
 - Har två övningslägen:
   - **Starta (manuellt):** du stegar själv mellan replikerna med Mellanslag och piltangenterna.
   - **Repetera (automatiskt):** datorn läser sina repliker och gör en paus där du ska säga din.
-- Exporterar en repetition som MP3, så att du kan öva med hörlurar utan datorn.
+- Exporterar hela repetitionen som en MP3-fil som du kan lyssna på i mobilen, i bilen eller var som helst ([se nedan](#öva-var-som-helst-med-mp3)).
 - Sparar ditt arbete som en projektfil (`.mrp`) med roller, röster och markeringar.
+
+## Öva var som helst med MP3
+
+Du behöver inte sitta vid datorn för att repetera. Välj **Arkiv → Exportera repetition som MP3...** så sparar ManusReader hela repetitionen som en ljudfil:
+
+- De andra rollerna läses upp med sina röster, med tempo och tonhöjd som du ställt in.
+- **Där det är din tur blir det tyst**, precis så länge som du behöver för att säga din replik. Pausen räknas fram från replikens längd, eller så väljer du ett fast antal sekunder.
+- Scenanvisningar läses inte upp.
+
+Lägg filen i mobilen, en surfplatta eller en musikspelare och öva på bussen, under promenaden eller i bilen. Du hör motspelarnas repliker och säger dina egna i pauserna.
+
+Exporten fungerar med alla röstmotorer: Windows, Piper och Azure. Vilka repliker datorn ska läsa styr du med bockarna i kolumnen **Läs upp**, på samma sätt som i repetitionsläget. Avmarkera dina egna repliker innan du exporterar.
 
 ## Ladda ner färdigt program för Windows
 
