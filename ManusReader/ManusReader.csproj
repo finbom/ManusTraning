@@ -6,6 +6,7 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>ManusReader</AssemblyName>
     <RootNamespace>ManusReader</RootNamespace>
+    <ApplicationIcon>assets\manus-reader.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <PublishSingleFile>true</PublishSingleFile>
@@ -21,6 +22,10 @@
     <PackageReference Include="Microsoft.CognitiveServices.Speech" Version="1.37.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="NAudio.Lame" Version="2.1.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="assets\manus-reader.ico" />
   </ItemGroup>
 
   <ItemGroup>
